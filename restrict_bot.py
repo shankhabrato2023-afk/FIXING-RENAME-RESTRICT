@@ -60,7 +60,7 @@ STRING_SESSION = os.environ.get("STRING_SESSION", None)
 LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "") 
 
 # ⏱ STATUS UPDATE TIME (Seconds) -> Yahan aap time change kar sakte hain!
-STATUS_UPDATE_INTERVAL = int(os.environ.get("STATUS_UPDATE_INTERVAL", 8))
+STATUS_UPDATE_INTERVAL = int(os.environ.get("STATUS_UPDATE_INTERVAL", 15))
 
 # Queue System
 TASK_QUEUE = defaultdict(list) 

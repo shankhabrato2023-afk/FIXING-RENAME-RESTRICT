@@ -756,16 +756,16 @@ async def send_start(client: Client, message: Message):
     except Exception as e:
         print(f"Failed to save user {user_id}: {e}")
 
-    welcome_video_url = "https://files.catbox.moe/o9azww.mp4"
+    welcome_video_url = "https://holy-field-055f.lucifermotivational.workers.dev/0:/Google%20Flow%20%E2%80%93%20Sept%2004%20-%2016-28.mp4"
     welcome_text = (
-        f"<b>👋 Hi {message.from_user.mention}, I am Save Restricted Content Bot.</b>\n\n"
+        f"<b>👋 Hi {message.from_user.mention}, I Forward Normal & Restricted Content.</b>\n\n"
         "<b>For downloading restricted content /login first.</b>\n\n"
         "<b>Know how to use bot by - /help</b>"
     )
     
     buttons = [
-        [InlineKeyboardButton("❣️ Developer", url = "https://t.me/thanuj66")],
-        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/telegram'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/telegram')]
+        [InlineKeyboardButton("❣️ Developer", url = "https://t.me/LuciferOpenSource")],
+        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/LuciferOpenSourceDiscussionGroup'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/LuciferOpenSource')]
     ]
 
     try:

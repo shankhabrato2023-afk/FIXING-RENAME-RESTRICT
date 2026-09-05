@@ -59,8 +59,8 @@ STRING_SESSION = os.environ.get("STRING_SESSION", None)
 # Error Log Channel (Optional)
 LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "") 
 
-# ⏱ STATUS UPDATE TIME (Seconds) -> Yahan aap time change kar sakte hain!
-STATUS_UPDATE_INTERVAL = int(os.environ.get("STATUS_UPDATE_INTERVAL", 8))
+# ⏱ STATUS UPDATE TIME (Seconds) -> 10 Seconds par set hai
+STATUS_UPDATE_INTERVAL = int(os.environ.get("STATUS_UPDATE_INTERVAL", 10))
 
 # Queue System
 TASK_QUEUE = defaultdict(list) 
@@ -109,8 +109,8 @@ HELP_TXT = """<b>📚 BOT'S USAGE GUIDE</b>
 • <code>/watchers</code> (or <code>/list</code>) - View active watchers & filters.
 • <code>/removetarget</code> - Remove a specific destination.
 • <code>/removesource</code> (or <code>/unwatch</code>) - Stop watching a source.
-• <code>/cancel</code> - Cancel ongoing tasks.
 • <code>/tasks</code> - Delete old progress and reload live progress pop-up.
+• <code>/cancel</code> - Cancel ongoing tasks.
 </blockquote>
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬"""
 
@@ -404,6 +404,7 @@ def generate_bar(percent: float, length: int = 11) -> str:
         
     return bar
 
+# 🚀 BUG FIX: TOTAL MSG SHOWS IN UI
 def generate_aesthetic_progress_ui(task_info: dict, current_status: str = "Forwarding", percent: float = 0.0, footer_status: str = "FORWARDING") -> str:
     total = task_info.get("total", 0)
     success = task_info.get("success", 0)
@@ -462,47 +463,16 @@ def sanitize_filename(filename: str) -> str:
 def smart_rename(filename, caption_text=""):
     fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     cap_str = str(caption_text or "").strip()
-    cap_str = re.sub(r'<[^>]+>', '', cap_str) 
-
-    # Fallback to caption if filename is just gibberish
-    cap_first_line = ""
-    if cap_str:
-        for line in cap_str.split('\n'):
-            line = line.strip()
-            if len(line) > 5:
-                cap_first_line = line
-                break
-
-    clean_name = fname_str
-    is_fname_junk = len(fname_str) <= 5 or re.fullmatch(r'[\d\-\s_]+(?:\.\w{3,4})*', fname_str)
     
-    if cap_first_line and is_fname_junk:
-        clean_name = cap_first_line
-        
-    # STRICT LOGIC - SIRF AUR SIRF SHURU KA KACHRA HATEGA (Middle & End tags/extensions safe rahenge)
-    while True:
-        old_name = clean_name
-        # Shuruwaat ka bracket tag [xyz] ya (xyz)
-        clean_name = re.sub(r'^[-~\s_]*\[.*?\][-~\s_]*', '', clean_name)
-        # Shuruwaat ka @username
-        clean_name = re.sub(r'^[-~\s_]*@[a-zA-Z0-9_]+[-~\s_]*', '', clean_name)
-        # Shuruwaat ka URL
-        clean_name = re.sub(r'^[-~\s_]*(?:https?:)?//\S+[-~\s_]*', '', clean_name)
-        clean_name = re.sub(r'^[-~\s_]*\bwww\.\S+[-~\s_]*', '', clean_name)
-        
-        if old_name == clean_name:
-            break
-
-    # Double spaces ko single space me badalna (underscores safe rahenge)
-    clean_name = re.sub(r'\s+', ' ', clean_name).strip(' -')
+    # Ye Regex sirf file/caption ke SURUWAAT (start) ke space, [brackets], aur @username ko hatayega
+    # Beech aur aakhir ke number aur extension safe rahenge
+    perfect_filename = re.sub(r'^(?:\s*(?:\[.*?\]|@\S+))+\s*', '', fname_str)
     
-    if len(clean_name) <= 2:
-        clean_name = fname_str
-
-    # Ab clean_name me pura naam with ALL extensions maujood hai (e.g., Movie.mkv.001)
-    perfect_caption = clean_name
-    perfect_filename = clean_name
-
+    if not perfect_filename.strip():
+        perfect_filename = fname_str
+        
+    perfect_caption = re.sub(r'^(?:\s*(?:\[.*?\]|@\S+))+\s*', '', cap_str)
+    
     return perfect_caption, perfect_filename
 
 async def check_link_restriction(user_id, link_text):
@@ -643,12 +613,15 @@ def progress(current, total, message, typ, task_uuid=None):
         raise Exception("CANCELLED_BY_USER")
 
     try:
-        msg_id = int(message.id)
-        chat_id = int(message.chat.id)
+        if task_uuid:
+            key = f"{task_uuid}:{typ}"
+        else:
+            msg_id = int(message.id)
+            chat_id = int(message.chat.id)
+            key = f"{chat_id}:{msg_id}:{typ}"
     except:
         return
         
-    key = f"{chat_id}:{msg_id}:{typ}"
     now = time.time()
     if key not in PROGRESS:
         PROGRESS[key] = {
@@ -672,9 +645,9 @@ def progress(current, total, message, typ, task_uuid=None):
             rec["eta"] = (total - current) / speed
             
 async def downstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = "", task_uuid: str = None, user_id: int = None):
-    original_msg_id = status_message.id
-    original_chat_id = status_message.chat.id
-    key = f"{original_chat_id}:{original_msg_id}:down"
+    original_msg_id = status_message.id if status_message else 0
+    original_chat_id = chat
+    key = f"{task_uuid}:down" if task_uuid else f"{original_chat_id}:{original_msg_id}:down"
     last_text = ""
     while True:
         current_msg_id = original_msg_id
@@ -686,7 +659,7 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
             current_chat_id = task_info.get("status_chat_id", original_chat_id)
             
         if task_uuid and CANCEL_FLAGS.get(task_uuid): break
-        
+
         rec = PROGRESS.get(key)
         if not rec:
             await asyncio.sleep(1)
@@ -699,7 +672,7 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"Downloading ({index}/{total_count})\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
+        current_action = f"Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
         status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
@@ -718,9 +691,9 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
             await asyncio.sleep(15)
             
 async def upstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = "", task_uuid: str = None, user_id: int = None):
-    original_msg_id = status_message.id
-    original_chat_id = status_message.chat.id
-    key = f"{original_chat_id}:{original_msg_id}:up"
+    original_msg_id = status_message.id if status_message else 0
+    original_chat_id = chat
+    key = f"{task_uuid}:up" if task_uuid else f"{original_chat_id}:{original_msg_id}:up"
     last_text = ""
     while True:
         current_msg_id = original_msg_id
@@ -745,7 +718,7 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"Uploading ({index}/{total_count})\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
+        current_action = f"Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
         status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
@@ -811,7 +784,7 @@ async def send_start(client: Client, message: Message):
     
     buttons = [
         [InlineKeyboardButton("❣️ Developer", url = "https://t.me/LuciferOpenSource")],
-        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/LuciferOpenSourceDiscussionGroup'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/LuciferOpenSource')]
+        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/LuciferOpenSourceDiscussionGroup''), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/LuciferOpenSource')]
     ]
 
     try:
@@ -839,7 +812,6 @@ async def send_help(client: Client, message: Message):
         disable_web_page_preview=True
     )
 
-# 🚀 BUG FIX: RECOVERY /TASKS COMMAND
 @app.on_message(filters.command(["tasks", "progress"]) & filters.private)
 async def task_refresh_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -1646,6 +1618,10 @@ async def filter_start_cb(client, query):
         PENDING_TASKS[user_id] = task_data 
         return await query.answer("❌ Select at least one type!", show_alert=True)
         
+    await query.answer("🚀 Proceeding...", show_alert=False)
+    try: await query.message.edit_text("⏳ **Initializing Task... Please Wait!**")
+    except Exception: pass
+    
     delay = task_data.get("delay", 3)
     if task_data.get("mode") == "WATCHER":
         await finalize_watcher_setup(client, query.message, task_data, delay, user_id=user_id)
@@ -1950,7 +1926,16 @@ async def start_task_final(client: Client, message_context: Message, task_data: 
         "user": task_data.get("dest_title", f"User({user_id})"),
         "dest_title_name": task_data.get("dest_title", "Direct Message"), 
         "item": task_data.get("link", "Unknown"),
-        "started": time.time()
+        "started": time.time(),
+        "total": 0,
+        "fetched": 0,
+        "success": 0,
+        "duplicate": 0,
+        "deleted": 0,
+        "skipped": 0,
+        "filtered": 0,
+        "failed": 0,
+        "current_status_text": "Starting Batch..."
     }
     
     is_restricted = task_data.get("is_restricted", False)
@@ -1978,12 +1963,24 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
     if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
     if not task_uuid: task_uuid = uuid.uuid4().hex
     
+    if task_uuid not in ACTIVE_PROCESSES[user_id]:
+        ACTIVE_PROCESSES[user_id][task_uuid] = {}
+        
     task_info = ACTIVE_PROCESSES[user_id][task_uuid]
     task_info.update({
         "user": user_mention, 
         "dest_title_name": dest_title,
         "item": text[:50]+"...", 
-        "started": time.time()
+        "started": time.time(),
+        "total": 0,
+        "fetched": 0,
+        "success": 0,
+        "duplicate": 0,
+        "deleted": 0,
+        "skipped": 0,
+        "filtered": 0,
+        "failed": 0,
+        "current_status_text": "Starting Batch..."
     })
 
     if "https://t.me/" in text:
@@ -1993,9 +1990,12 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
         filter_thread_id = None 
         start_time = time.time()
         source_title = "Unknown Source"
+        total_count = 0
+        success_count = 0
+        failed_count = 0
+        was_cancelled = False
 
         try:
-            was_cancelled = False
             clean_text = text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "")
             parts = clean_text.split("/")
 
@@ -2023,7 +2023,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     workers=4,
                     sleep_threshold=60,
                     ipv6=False,
-                    in_memory=True # Memory Fix
+                    in_memory=True
                 )
                 await acc.start()
                 is_temp_client = True
@@ -2088,7 +2088,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 source_title = source_chat.title or "Private Chat"
             except: pass
 
-            # 🚀 FIX: NEW AESTHETIC UI GENERATED IMMEDIATELY AT 0 SECONDS
             task_info.update({
                 "source_title": source_title, 
                 "total": total_count, 
@@ -2103,12 +2102,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current_status_text": "Starting Batch..."
             })
 
-            initial_ui = generate_aesthetic_progress_ui(
-                task_info, 
-                current_status="Starting Batch...", 
-                percent=0.0, 
-                footer_status="FORWARDING"
-            )
+            # 🚀 0-SEC UI FIX
+            initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
             cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel_task:{task_uuid}")]])
 
             try:
@@ -2194,8 +2189,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 current_now = time.time()
                 needs_refresh = task_info.get("needs_refresh", False)
                 
-                # 🚀 STATUS UPDATE TIMING & REFRESH LOGIC
-                if (task_info["fetched"] % 10 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID or needs_refresh:
+                if (task_info["fetched"] % 5 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID or needs_refresh:
                     percent = (task_info["fetched"] / total_count) * 100.0 if total_count > 0 else 0.0
                     
                     eta_str = "..."
@@ -2214,7 +2208,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     
                     try:
                         active_chat = task_info.get("status_chat_id", message.chat.id)
-                        active_msg_id = task_info.get("status_msg_id", status_message.id)
+                        active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
                         
                         if needs_refresh:
                             try: await client.delete_messages(active_chat, active_msg_id)
@@ -2223,7 +2217,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                             task_info["status_msg_id"] = new_msg.id
                             task_info["status_chat_id"] = new_msg.chat.id
                             task_info["needs_refresh"] = False
-                        else:
+                        elif active_msg_id:
                             await client.edit_message_text(
                                 chat_id=active_chat,
                                 message_id=active_msg_id,
@@ -2249,8 +2243,11 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
             try:
                 tot = task_info.get("total", 1)
+                if tot == 0: tot = 1
                 fet = task_info.get("fetched", 0)
                 final_percent = (fet / tot * 100.0) if tot > 0 else 0.0
+                if final_percent > 100.0: final_percent = 100.0
+                
                 final_status_ui = generate_aesthetic_progress_ui(
                     task_info,
                     current_status=status_word,
@@ -2258,8 +2255,9 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     footer_status=footer_tag
                 )
                 active_chat = task_info.get("status_chat_id", message.chat.id)
-                active_msg_id = task_info.get("status_msg_id", status_message.id)
-                await client.edit_message_text(chat_id=active_chat, message_id=active_msg_id, text=final_status_ui)
+                active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
+                if active_msg_id:
+                    await client.edit_message_text(chat_id=active_chat, message_id=active_msg_id, text=final_status_ui)
             except Exception: pass
 
             if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):

@@ -459,7 +459,7 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX: ONLY FRONT JUNK REMOVED. ALL EXTENSIONS (.001, .mkv) PRESERVED!
+# 🚀 BUG FIX 1: ONLY LEADING TAGS REMOVED. .mkv AND .001 PRESERVED 100%
 def smart_rename(filename, caption_text=""):
     fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     cap_str = str(caption_text or "").strip()
@@ -676,13 +676,16 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
         status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
-        if status_text != last_text:
-            try:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel_task:{task_uuid}")]])
-                await client.edit_message_text(current_chat_id, current_msg_id, status_text, reply_markup=kb)
-                last_text = status_text
-            except Exception:
-                pass
+        # 🚀 CANCEL CONFIRMATION PAUSE FIX
+        if not task_info.get("confirming_cancel"):
+            if status_text != last_text or task_info.get("force_update_ui"):
+                task_info["force_update_ui"] = False
+                try:
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
+                    await client.edit_message_text(current_chat_id, current_msg_id, status_text, reply_markup=kb)
+                    last_text = status_text
+                except Exception:
+                    pass
         
         total_size = rec.get("total", 0)
         if total_size > 0 and total_size < 50 * 1024 * 1024:
@@ -722,13 +725,16 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
         status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
-        if status_text != last_text:
-            try:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel_task:{task_uuid}")]])
-                await client.edit_message_text(current_chat_id, current_msg_id, status_text, reply_markup=kb)
-                last_text = status_text
-            except Exception:
-                pass
+        # 🚀 CANCEL CONFIRMATION PAUSE FIX
+        if not task_info.get("confirming_cancel"):
+            if status_text != last_text or task_info.get("force_update_ui"):
+                task_info["force_update_ui"] = False
+                try:
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
+                    await client.edit_message_text(current_chat_id, current_msg_id, status_text, reply_markup=kb)
+                    last_text = status_text
+                except Exception:
+                    pass
         
         total_size = rec.get("total", 0)
         if total_size > 0 and total_size < 50 * 1024 * 1024:
@@ -820,9 +826,7 @@ async def task_refresh_handler(client: Client, message: Message):
         return await message.reply("💤 **No active tasks running.**")
         
     for task_uuid, info in list(user_tasks.items()):
-        if CANCEL_FLAGS.get(task_uuid):
-            continue
-            
+        if CANCEL_FLAGS.get(task_uuid): continue
         info["needs_refresh"] = True
     await message.reply("✅ **Refreshing... Your live progress message will pop up again shortly!**")
 
@@ -844,8 +848,9 @@ async def send_cancel(client: Client, message: Message):
     for tid, info in list(user_tasks.items()):
         label = info.get("item", "Task")
         label_short = (label[:26] + "...") if len(label) > 29 else label
-        buttons.append([InlineKeyboardButton(f"🛑 {label_short}", callback_data=f"cancel_task:{tid}")])
-    buttons.append([InlineKeyboardButton("🛑 Cancel ALL My Tasks", callback_data="cancel_all")])
+        # Changed to ask_cancel for Confirmation UI
+        buttons.append([InlineKeyboardButton(f"🛑 {label_short}", callback_data=f"ask_cancel:{tid}")])
+    buttons.append([InlineKeyboardButton("🛑 Cancel ALL My Tasks", callback_data="ask_cancel_all")])
     buttons.append([InlineKeyboardButton("❌ Close Menu", callback_data="close_menu")])
 
     await message.reply(
@@ -854,7 +859,8 @@ async def send_cancel(client: Client, message: Message):
         quote=True
     )
     
-@app.on_callback_query(filters.regex(r"^cancel_") | filters.regex(r"^cancel_task:"))
+# 🚀 ADDED CONFIRMATION LOGIC IN CALLBACK
+@app.on_callback_query(filters.regex(r"^cancel_") | filters.regex(r"^cancel_task:") | filters.regex(r"^ask_cancel") | filters.regex(r"^resume_task:"))
 async def cancel_callback(client: Client, query):
     user_id = query.from_user.id
     data = query.data
@@ -863,6 +869,14 @@ async def cancel_callback(client: Client, query):
         if user_id in PENDING_TASKS:
             del PENDING_TASKS[user_id]
         await query.message.edit("❌ **Task Setup Cancelled.**")
+        return
+
+    if data == "ask_cancel_all":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ YES, CANCEL ALL", callback_data="cancel_all")],
+            [InlineKeyboardButton("❌ NO, GO BACK", callback_data="close_menu")]
+        ])
+        await query.message.edit("**⚠️ Are you sure you want to cancel ALL active tasks?**", reply_markup=kb)
         return
 
     if data == "cancel_all":
@@ -878,6 +892,40 @@ async def cancel_callback(client: Client, query):
         for tid in user_tasks:
             CANCEL_FLAGS[tid] = True 
         await query.message.edit("**🛑 Cancelling ALL your tasks...**\n(This may take a moment to stop current downloads)")
+        return
+
+    if data.startswith("ask_cancel:"):
+        task_uuid = data.split(":",1)[1]
+        user_tasks = ACTIVE_PROCESSES.get(user_id, {})
+        if task_uuid not in user_tasks:
+            await query.answer("Task not found or already finished.", show_alert=True)
+            try: await query.message.delete()
+            except: pass
+            return
+            
+        user_tasks[task_uuid]["confirming_cancel"] = True
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ YES, CANCEL", callback_data=f"cancel_task:{task_uuid}")],
+            [InlineKeyboardButton("❌ NO, RESUME", callback_data=f"resume_task:{task_uuid}")]
+        ])
+        await query.message.edit("⚠️ **Are you sure you want to cancel this task?**\n\n*(Background progress will pause updating here until you choose)*", reply_markup=kb)
+        return
+
+    if data.startswith("resume_task:"):
+        task_uuid = data.split(":",1)[1]
+        user_tasks = ACTIVE_PROCESSES.get(user_id, {})
+        if task_uuid in user_tasks:
+            user_tasks[task_uuid]["confirming_cancel"] = False
+            user_tasks[task_uuid]["force_update_ui"] = True
+            await query.answer("▶️ Task Resumed!", show_alert=False)
+            # If they resumed from the /cancel command list instead of live UI, just delete the message
+            if query.message.id != user_tasks[task_uuid].get("status_msg_id"):
+                try: await query.message.delete()
+                except: pass
+        else:
+            await query.answer("Task already finished.", show_alert=True)
+            try: await query.message.delete()
+            except: pass
         return
 
     if data.startswith("cancel_task:"):
@@ -1618,10 +1666,6 @@ async def filter_start_cb(client, query):
         PENDING_TASKS[user_id] = task_data 
         return await query.answer("❌ Select at least one type!", show_alert=True)
         
-    await query.answer("🚀 Proceeding...", show_alert=False)
-    try: await query.message.edit_text("⏳ **Initializing Task... Please Wait!**")
-    except Exception: pass
-    
     delay = task_data.get("delay", 3)
     if task_data.get("mode") == "WATCHER":
         await finalize_watcher_setup(client, query.message, task_data, delay, user_id=user_id)
@@ -1935,7 +1979,9 @@ async def start_task_final(client: Client, message_context: Message, task_data: 
         "skipped": 0,
         "filtered": 0,
         "failed": 0,
-        "current_status_text": "Starting Batch..."
+        "current_status_text": "Starting Batch...",
+        "confirming_cancel": False,
+        "force_update_ui": False
     }
     
     is_restricted = task_data.get("is_restricted", False)
@@ -1980,7 +2026,9 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
         "skipped": 0,
         "filtered": 0,
         "failed": 0,
-        "current_status_text": "Starting Batch..."
+        "current_status_text": "Starting Batch...",
+        "confirming_cancel": False,
+        "force_update_ui": False
     })
 
     if "https://t.me/" in text:
@@ -2102,9 +2150,9 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current_status_text": "Starting Batch..."
             })
 
-            # 🚀 0-SEC UI FIX
+            # 🚀 0-SEC UI FIX WITH NEW CANCEL CONFIRMATION BUTTON
             initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
-            cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel_task:{task_uuid}")]])
+            cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
 
             try:
                 status_message = await client.send_message(
@@ -2155,7 +2203,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
                     wait_msg = f"⏳ **Rate Limiting Detected**\nSleeping for {e.value} seconds..."
                     try: 
-                        if not is_restricted: await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), wait_msg)
+                        if not is_restricted and not task_info.get("confirming_cancel"): await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), wait_msg)
                     except: pass
                     await asyncio.sleep(e.value + 5)
                     continue
@@ -2188,45 +2236,49 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
                 current_now = time.time()
                 needs_refresh = task_info.get("needs_refresh", False)
+                force_update = task_info.get("force_update_ui", False)
                 
-                if (task_info["fetched"] % 5 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID or needs_refresh:
-                    percent = (task_info["fetched"] / total_count) * 100.0 if total_count > 0 else 0.0
-                    
-                    eta_str = "..."
-                    if task_info["fetched"] > 0:
-                        elapsed = current_now - start_time
-                        if (task_info["fetched"] / elapsed) > 0:
-                            eta_sec = int(((total_count - task_info["fetched"]) / (task_info["fetched"] / elapsed)))
-                            eta_str = get_readable_time(eta_sec)
+                # 🚀 STATUS UPDATE INTERVAL AND PAUSE ON CANCEL CHECK
+                if not task_info.get("confirming_cancel"):
+                    if (task_info["fetched"] % 5 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID or needs_refresh or force_update:
+                        task_info["force_update_ui"] = False
+                        percent = (task_info["fetched"] / total_count) * 100.0 if total_count > 0 else 0.0
                         
-                    fresh_status_ui = generate_aesthetic_progress_ui(
-                        task_info, 
-                        current_status="Forwarding", 
-                        percent=percent, 
-                        footer_status="FORWARDING"
-                    ) + f"\n\n**⏳ ETA:** {eta_str}"
-                    
-                    try:
-                        active_chat = task_info.get("status_chat_id", message.chat.id)
-                        active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
+                        eta_str = "..."
+                        if task_info["fetched"] > 0:
+                            elapsed = current_now - start_time
+                            if (task_info["fetched"] / elapsed) > 0:
+                                eta_sec = int(((total_count - task_info["fetched"]) / (task_info["fetched"] / elapsed)))
+                                eta_str = get_readable_time(eta_sec)
+                            
+                        fresh_status_ui = generate_aesthetic_progress_ui(
+                            task_info, 
+                            current_status="Forwarding", 
+                            percent=percent, 
+                            footer_status="FORWARDING"
+                        ) + f"\n\n**⏳ ETA:** {eta_str}"
                         
-                        if needs_refresh:
-                            try: await client.delete_messages(active_chat, active_msg_id)
-                            except: pass
-                            new_msg = await client.send_message(message.chat.id, fresh_status_ui, reply_markup=cancel_btn, reply_to_message_id=message.id)
-                            task_info["status_msg_id"] = new_msg.id
-                            task_info["status_chat_id"] = new_msg.chat.id
-                            task_info["needs_refresh"] = False
-                        elif active_msg_id:
-                            await client.edit_message_text(
-                                chat_id=active_chat,
-                                message_id=active_msg_id,
-                                text=fresh_status_ui,
-                                reply_markup=cancel_btn
-                            )
-                        last_update_time = current_now
-                    except Exception: 
-                        pass
+                        try:
+                            active_chat = task_info.get("status_chat_id", message.chat.id)
+                            active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
+                            
+                            if needs_refresh:
+                                try: await client.delete_messages(active_chat, active_msg_id)
+                                except: pass
+                                new_msg = await client.send_message(message.chat.id, fresh_status_ui, reply_markup=cancel_btn, reply_to_message_id=message.id)
+                                task_info["status_msg_id"] = new_msg.id
+                                task_info["status_chat_id"] = new_msg.chat.id
+                                task_info["needs_refresh"] = False
+                            elif active_msg_id:
+                                await client.edit_message_text(
+                                    chat_id=active_chat,
+                                    message_id=active_msg_id,
+                                    text=fresh_status_ui,
+                                    reply_markup=cancel_btn
+                                )
+                            last_update_time = current_now
+                        except Exception: 
+                            pass
                     
         except Exception as e:
             await send_log(f"❌ **Task Crashed**\nUser: `{user_id}`\nError: `{e}`")

@@ -60,7 +60,7 @@ STRING_SESSION = os.environ.get("STRING_SESSION", None)
 LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "") 
 
 # ⏱ STATUS UPDATE TIME (Seconds) -> Yahan aap time change kar sakte hain!
-STATUS_UPDATE_INTERVAL = int(os.environ.get("STATUS_UPDATE_INTERVAL", 10))
+STATUS_UPDATE_INTERVAL = int(os.environ.get("STATUS_UPDATE_INTERVAL", 8))
 
 # Queue System
 TASK_QUEUE = defaultdict(list) 
@@ -405,7 +405,7 @@ def generate_bar(percent: float, length: int = 11) -> str:
     return bar
 
 def generate_aesthetic_progress_ui(task_info: dict, current_status: str = "Forwarding", percent: float = 0.0, footer_status: str = "FORWARDING") -> str:
-    fetched = task_info.get("fetched", 0)
+    total = task_info.get("total", 0)
     success = task_info.get("success", 0)
     duplicate = task_info.get("duplicate", 0)
     deleted = task_info.get("deleted", 0)
@@ -422,7 +422,7 @@ def generate_aesthetic_progress_ui(task_info: dict, current_status: str = "Forwa
     text = (
         f"╔════❰ ғᴏʀᴡᴀʀᴅ sᴛᴀᴛᴜs ❱═❍⊱❁۪۪\n"
         f"║╭━━━━━━━━━━━━━━━➣\n"
-        f"║┣⪼🕵 ғᴇᴄʜᴇᴅ Msɢ : {fetched}\n"
+        f"║┣⪼🕵 Tᴏᴛᴀʟ Msɢ : {total}\n"
         f"║┃\n"
         f"║┣⪼✅ sᴜᴄᴄᴇғᴜʟʟʏ Fᴡᴅ : {success}\n"
         f"║┃\n"
@@ -435,7 +435,6 @@ def generate_aesthetic_progress_ui(task_info: dict, current_status: str = "Forwa
         f"║┣⪼🔁 Fɪʟᴛᴇʀᴇᴅ Msɢ : {filtered}\n"
         f"║┃\n"
         f"║┣⪼📊 Cᴜʀʀᴇɴᴛ Sᴛᴀᴛᴜs: {current_status}\n"
-        f"║┃\n"
         f"║┃\n"
         f"║┣⪼🔁 Source: {source_title}\n"
         f"║┃\n"
@@ -459,20 +458,51 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX 1: ONLY LEADING TAGS REMOVED. .mkv AND .001 PRESERVED 100%
+# 🚀 BUG FIX: ONLY FRONT JUNK REMOVED. ALL EXTENSIONS (.001, .mkv) PRESERVED!
 def smart_rename(filename, caption_text=""):
     fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     cap_str = str(caption_text or "").strip()
+    cap_str = re.sub(r'<[^>]+>', '', cap_str) 
+
+    # Fallback to caption if filename is just gibberish
+    cap_first_line = ""
+    if cap_str:
+        for line in cap_str.split('\n'):
+            line = line.strip()
+            if len(line) > 5:
+                cap_first_line = line
+                break
+
+    clean_name = fname_str
+    is_fname_junk = len(fname_str) <= 5 or re.fullmatch(r'[\d\-\s_]+(?:\.\w{3,4})*', fname_str)
     
-    # Ye Regex sirf file/caption ke STARTING me maujood [tags] aur @username hatayega
-    # Beech aur aakhir ke number aur extension safe rahenge
-    perfect_filename = re.sub(r'^(?:\s*(?:\[.*?\]|@\S+))+\s*', '', fname_str)
-    
-    if not perfect_filename.strip():
-        perfect_filename = fname_str
+    if cap_first_line and is_fname_junk:
+        clean_name = cap_first_line
         
-    perfect_caption = re.sub(r'^(?:\s*(?:\[.*?\]|@\S+))+\s*', '', cap_str)
+    # STRICT LOGIC - SIRF AUR SIRF SHURU KA KACHRA HATEGA (Middle & End tags/extensions safe rahenge)
+    while True:
+        old_name = clean_name
+        # Shuruwaat ka bracket tag [xyz] ya (xyz)
+        clean_name = re.sub(r'^[-~\s_]*\[.*?\][-~\s_]*', '', clean_name)
+        # Shuruwaat ka @username
+        clean_name = re.sub(r'^[-~\s_]*@[a-zA-Z0-9_]+[-~\s_]*', '', clean_name)
+        # Shuruwaat ka URL
+        clean_name = re.sub(r'^[-~\s_]*(?:https?:)?//\S+[-~\s_]*', '', clean_name)
+        clean_name = re.sub(r'^[-~\s_]*\bwww\.\S+[-~\s_]*', '', clean_name)
+        
+        if old_name == clean_name:
+            break
+
+    # Double spaces ko single space me badalna (underscores safe rahenge)
+    clean_name = re.sub(r'\s+', ' ', clean_name).strip(' -')
     
+    if len(clean_name) <= 2:
+        clean_name = fname_str
+
+    # Ab clean_name me pura naam with ALL extensions maujood hai (e.g., Movie.mkv.001)
+    perfect_caption = clean_name
+    perfect_filename = clean_name
+
     return perfect_caption, perfect_filename
 
 async def check_link_restriction(user_id, link_text):
@@ -613,15 +643,12 @@ def progress(current, total, message, typ, task_uuid=None):
         raise Exception("CANCELLED_BY_USER")
 
     try:
-        if task_uuid:
-            key = f"{task_uuid}:{typ}"
-        else:
-            msg_id = int(message.id)
-            chat_id = int(message.chat.id)
-            key = f"{chat_id}:{msg_id}:{typ}"
+        msg_id = int(message.id)
+        chat_id = int(message.chat.id)
     except:
         return
         
+    key = f"{chat_id}:{msg_id}:{typ}"
     now = time.time()
     if key not in PROGRESS:
         PROGRESS[key] = {
@@ -647,7 +674,7 @@ def progress(current, total, message, typ, task_uuid=None):
 async def downstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = "", task_uuid: str = None, user_id: int = None):
     original_msg_id = status_message.id
     original_chat_id = status_message.chat.id
-    key = f"{task_uuid}:down" if task_uuid else f"{original_chat_id}:{original_msg_id}:down"
+    key = f"{original_chat_id}:{original_msg_id}:down"
     last_text = ""
     while True:
         current_msg_id = original_msg_id
@@ -659,7 +686,7 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
             current_chat_id = task_info.get("status_chat_id", original_chat_id)
             
         if task_uuid and CANCEL_FLAGS.get(task_uuid): break
-
+        
         rec = PROGRESS.get(key)
         if not rec:
             await asyncio.sleep(1)
@@ -672,7 +699,7 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
+        current_action = f"Downloading ({index}/{total_count})\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
         status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
@@ -693,7 +720,7 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
 async def upstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = "", task_uuid: str = None, user_id: int = None):
     original_msg_id = status_message.id
     original_chat_id = status_message.chat.id
-    key = f"{task_uuid}:up" if task_uuid else f"{original_chat_id}:{original_msg_id}:up"
+    key = f"{original_chat_id}:{original_msg_id}:up"
     last_text = ""
     while True:
         current_msg_id = original_msg_id
@@ -718,7 +745,7 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
+        current_action = f"Uploading ({index}/{total_count})\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
         status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
@@ -784,7 +811,7 @@ async def send_start(client: Client, message: Message):
     
     buttons = [
         [InlineKeyboardButton("❣️ Developer", url = "https://t.me/LuciferOpenSource")],
-        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/LuciferOpenSourceDiscussionGroup'''), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/LuciferOpenSource')]
+        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/LuciferOpenSourceDiscussionGroup''), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/LuciferOpenSource')]
     ]
 
     try:
@@ -812,7 +839,7 @@ async def send_help(client: Client, message: Message):
         disable_web_page_preview=True
     )
 
-# 🚀 BUG FIX 2: TASKS COMMAND ADDED FOR EASY RECOVERY
+# 🚀 BUG FIX: RECOVERY /TASKS COMMAND
 @app.on_message(filters.command(["tasks", "progress"]) & filters.private)
 async def task_refresh_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -1951,7 +1978,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
     if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
     if not task_uuid: task_uuid = uuid.uuid4().hex
     
-    ACTIVE_PROCESSES[user_id][task_uuid].update({
+    task_info = ACTIVE_PROCESSES[user_id][task_uuid]
+    task_info.update({
         "user": user_mention, 
         "dest_title_name": dest_title,
         "item": text[:50]+"...", 
@@ -1961,12 +1989,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
     if "https://t.me/" in text:
         acc = None
         is_temp_client = False 
-        success_count = 0
-        failed_count = 0
-        total_count = 0
         status_message = None
         filter_thread_id = None 
-        
         start_time = time.time()
         source_title = "Unknown Source"
 
@@ -2041,7 +2065,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
             saved_msg_id = await db.get_sync_progress(user_id, chatid_check, primary_dest)
 
             skip_duplicates_amount = 0
-
+            
             if saved_msg_id >= toID:
                 skip_msg = (f"⏭ **DUPLICATE SKIPPED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n✅ **Status:** Files up to ID `{toID}` are already synced.")
                 try: await client.send_message(message.chat.id, skip_msg, reply_to_message_id=message.id)
@@ -2064,19 +2088,40 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 source_title = source_chat.title or "Private Chat"
             except: pass
 
-            # 🚀 NEW UI: 0-SEC LOAD FIX
-            ACTIVE_PROCESSES[user_id][task_uuid].update({"source_title": source_title, "total": total_count, "current": 0})
-            status_text_header = f"**Batch Task Started!** 🚀\n"
-            if filter_thread_id: status_text_header += f"**Filter:** `Topic {filter_thread_id} Only` 🎯\n"
+            # 🚀 FIX: NEW AESTHETIC UI GENERATED IMMEDIATELY AT 0 SECONDS
+            task_info.update({
+                "source_title": source_title, 
+                "total": total_count, 
+                "current": 0,
+                "fetched": 0,
+                "success": 0,
+                "duplicate": skip_duplicates_amount,
+                "deleted": 0,
+                "skipped": 0,
+                "filtered": 0,
+                "failed": 0,
+                "current_status_text": "Starting Batch..."
+            })
 
-            if is_restricted:
-                status_message = await client.send_message(message.chat.id, f"⚡ **Initializing Task...**\n{status_text_header}\nSource: {source_title}\nTotal Files: {total_count}", reply_to_message_id=message.id)
-            else:
-                status_message = await client.send_message(message.chat.id, f"{status_text_header}\n\n{generate_bar(0)}\n\n**Source:** {source_title}\n**Destination :** {dest_title}\n**Total:** {total_count}\n**Processed:** 0\n**Success:** 0\n**Failed:** 0\n**ETA:** ...", reply_to_message_id=message.id)
+            initial_ui = generate_aesthetic_progress_ui(
+                task_info, 
+                current_status="Starting Batch...", 
+                percent=0.0, 
+                footer_status="FORWARDING"
+            )
+            cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"cancel_task:{task_uuid}")]])
 
-            if status_message:
-                ACTIVE_PROCESSES[user_id][task_uuid]["status_msg_id"] = status_message.id
-                ACTIVE_PROCESSES[user_id][task_uuid]["status_chat_id"] = status_message.chat.id
+            try:
+                status_message = await client.send_message(
+                    message.chat.id,
+                    initial_ui,
+                    reply_markup=cancel_btn,
+                    reply_to_message_id=message.id
+                )
+                task_info["status_msg_id"] = status_message.id
+                task_info["status_chat_id"] = status_message.chat.id
+            except Exception as e:
+                pass
 
             last_update_time = time.time()
             inner_header = f"Filter: Topic {filter_thread_id} Only 🎯" if filter_thread_id else ""
@@ -2091,10 +2136,11 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     was_cancelled = True; break
 
                 is_success = False
+                status_reason = "failed"
                 try:
                     chat_id = int("-100" + parts[0]) if "https://t.me/c/" in text else parts[0]
                     
-                    is_success = await handle_private(
+                    is_success, status_reason = await handle_private(
                         client, acc, message, chat_id, msgid, index, total_count, 
                         status_message, targets, delay, 
                         user_id, task_uuid, 
@@ -2107,30 +2153,29 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 except FloodWait as e:
                     if e.value > 300:
                         print(f"FloodWait too long ({e.value}s). Stopping task.")
-                        try:
-                            s_chat = ACTIVE_PROCESSES[user_id][task_uuid].get("status_chat_id", status_message.chat.id)
-                            s_msg = ACTIVE_PROCESSES[user_id][task_uuid].get("status_msg_id", status_message.id)
-                            await client.edit_message_text(s_chat, s_msg, f"❌ **Task Cancelled automatically**\nReason: FloodWait too long ({e.value}s).")
+                        try: await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), f"❌ **Task Cancelled automatically**\nReason: FloodWait too long ({e.value}s).")
                         except: pass
                         was_cancelled = True
                         break
 
                     wait_msg = f"⏳ **Rate Limiting Detected**\nSleeping for {e.value} seconds..."
                     try: 
-                        if not is_restricted:
-                            s_chat = ACTIVE_PROCESSES[user_id][task_uuid].get("status_chat_id", status_message.chat.id)
-                            s_msg = ACTIVE_PROCESSES[user_id][task_uuid].get("status_msg_id", status_message.id)
-                            await client.edit_message_text(s_chat, s_msg, wait_msg)
+                        if not is_restricted: await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), wait_msg)
                     except: pass
                     await asyncio.sleep(e.value + 5)
                     continue
                     
                 except Exception as e: 
                     print(f"Error processing {msgid}: {e}")
-                    pass
+                    status_reason = "failed"
 
-                if is_success: success_count += 1
-                else: failed_count += 1
+                task_info["fetched"] += 1
+                if status_reason == "success": task_info["success"] += 1
+                elif status_reason == "deleted": task_info["deleted"] += 1
+                elif status_reason == "filtered": task_info["filtered"] += 1
+                elif status_reason == "skipped": task_info["skipped"] += 1
+                elif status_reason == "cancelled": was_cancelled = True; break
+                else: task_info["failed"] += 1
 
                 if index < total_count:
                     if is_success:
@@ -2140,47 +2185,83 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     else:
                         await asyncio.sleep(0.05)
                         
-                if index % 100 == 0:
+                if task_info["fetched"] % 100 == 0:
                     gc.collect()
 
-                if not was_cancelled: await db.save_sync_progress(user_id, chatid_check, primary_dest, msgid)
+                if not was_cancelled and is_success: 
+                    await db.save_sync_progress(user_id, chatid_check, primary_dest, msgid)
 
-                if not is_restricted:
-                    current_now = time.time()
-                    needs_refresh = ACTIVE_PROCESSES[user_id][task_uuid].get("needs_refresh", False)
-                    # 🚀 STATUS UPDATE INTERVAL AND REFRESH CHECK
-                    if (index % 10 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or index == total_count or needs_refresh:
+                current_now = time.time()
+                needs_refresh = task_info.get("needs_refresh", False)
+                
+                # 🚀 STATUS UPDATE TIMING & REFRESH LOGIC
+                if (task_info["fetched"] % 10 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID or needs_refresh:
+                    percent = (task_info["fetched"] / total_count) * 100.0 if total_count > 0 else 0.0
+                    
+                    eta_str = "..."
+                    if task_info["fetched"] > 0:
                         elapsed = current_now - start_time
-                        percent = (index / total_count) * 100
-                        eta_str = get_readable_time(int(((total_count - index) / (index / elapsed)))) if index > 0 else "..."
+                        if (task_info["fetched"] / elapsed) > 0:
+                            eta_sec = int(((total_count - task_info["fetched"]) / (task_info["fetched"] / elapsed)))
+                            eta_str = get_readable_time(eta_sec)
                         
-                        status_text_content = (
-                            f"{status_text_header}\n\n{generate_bar(percent)}\n\n"
-                            f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
-                            f"**Total:** {total_count}\n**Processed:** {index}\n"
-                            f"**Success:** {success_count}\n**Failed:** {failed_count}\n**ETA:** {eta_str}"
-                        )
+                    fresh_status_ui = generate_aesthetic_progress_ui(
+                        task_info, 
+                        current_status="Forwarding", 
+                        percent=percent, 
+                        footer_status="FORWARDING"
+                    ) + f"\n\n**⏳ ETA:** {eta_str}"
+                    
+                    try:
+                        active_chat = task_info.get("status_chat_id", message.chat.id)
+                        active_msg_id = task_info.get("status_msg_id", status_message.id)
                         
-                        try:
-                            s_chat = ACTIVE_PROCESSES[user_id][task_uuid].get("status_chat_id", status_message.chat.id)
-                            s_msg = ACTIVE_PROCESSES[user_id][task_uuid].get("status_msg_id", status_message.id)
-                            
-                            if needs_refresh:
-                                try: await client.delete_messages(s_chat, s_msg)
-                                except: pass
-                                new_status = await client.send_message(message.chat.id, status_text_content, reply_to_message_id=message.id)
-                                ACTIVE_PROCESSES[user_id][task_uuid]["status_msg_id"] = new_status.id
-                                ACTIVE_PROCESSES[user_id][task_uuid]["status_chat_id"] = new_status.chat.id
-                                ACTIVE_PROCESSES[user_id][task_uuid]["needs_refresh"] = False
-                            else:
-                                await client.edit_message_text(s_chat, s_msg, status_text_content)
-                            last_update_time = current_now
-                        except: pass
+                        if needs_refresh:
+                            try: await client.delete_messages(active_chat, active_msg_id)
+                            except: pass
+                            new_msg = await client.send_message(message.chat.id, fresh_status_ui, reply_markup=cancel_btn, reply_to_message_id=message.id)
+                            task_info["status_msg_id"] = new_msg.id
+                            task_info["status_chat_id"] = new_msg.chat.id
+                            task_info["needs_refresh"] = False
+                        else:
+                            await client.edit_message_text(
+                                chat_id=active_chat,
+                                message_id=active_msg_id,
+                                text=fresh_status_ui,
+                                reply_markup=cancel_btn
+                            )
+                        last_update_time = current_now
+                    except Exception: 
+                        pass
                     
         except Exception as e:
             await send_log(f"❌ **Task Crashed**\nUser: `{user_id}`\nError: `{e}`")
 
         finally:
+            if 'was_cancelled' in locals() and was_cancelled:
+                footer_tag = "ᴄᴀɴᴄᴇʟʟᴇᴅ"
+                status_word = "Cancelled"
+                header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
+            else:
+                footer_tag = "ᴄᴏᴍᴘʟᴇᴛᴇᴅ"
+                status_word = "Completed"
+                header = f"Batch was Completed! ✅ {user_mention} ✨"
+
+            try:
+                tot = task_info.get("total", 1)
+                fet = task_info.get("fetched", 0)
+                final_percent = (fet / tot * 100.0) if tot > 0 else 0.0
+                final_status_ui = generate_aesthetic_progress_ui(
+                    task_info,
+                    current_status=status_word,
+                    percent=final_percent,
+                    footer_status=footer_tag
+                )
+                active_chat = task_info.get("status_chat_id", message.chat.id)
+                active_msg_id = task_info.get("status_msg_id", status_message.id)
+                await client.edit_message_text(chat_id=active_chat, message_id=active_msg_id, text=final_status_ui)
+            except Exception: pass
+
             if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):
                 try: del ACTIVE_PROCESSES[user_id][task_uuid]
                 except: pass
@@ -2204,11 +2285,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
             duration = time.time() - start_time
             time_taken_str = get_readable_time(int(duration))
-            
-            if 'was_cancelled' in locals() and was_cancelled:
-                header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
-            else:
-                header = f"Batch was Completed! ✅ {user_mention} ✨"
 
             final_text = (
                 f"{header}\n"
@@ -2216,54 +2292,46 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 f"⏱ **Time Taken:** `{time_taken_str}`\n"
                 f"📊 **Statistics:**\n"
                 f"├ 📥 **Total Requested:** `{total_count}`\n"
-                f"├ ✅ **Successful:** `{success_count}`\n"
-                f"└ ❌ **Failed/Skipped:** `{failed_count}`"
+                f"├ ✅ **Successful:** `{task_info.get('success', 0)}`\n"
+                f"├ 👥 **Duplicates:** `{task_info.get('duplicate', 0)}`\n"
+                f"├ 🗑 **Deleted:** `{task_info.get('deleted', 0)}`\n"
+                f"├ 🪆 **Skipped:** `{task_info.get('skipped', 0)}`\n"
+                f"├ 🔁 **Filtered:** `{task_info.get('filtered', 0)}`\n"
+                f"└ ❌ **Failed:** `{task_info.get('failed', 0)}`"
             )
-            
             try: await client.send_message(message.chat.id, final_text, reply_to_message_id=message.id)
-            except: pass
-            try: await status_message.delete()
             except: pass
 
 async def handle_private(client: Client, acc, message: Message, chatid, msgid: int, index: int, total_count: int, status_message: Message, targets: list, delay, user_id, task_uuid=None, is_restricted=False, header_text="", filter_thread_id=None, allowed_types=None):
-    if not task_uuid:
-        task_uuid = "default"
+    if not task_uuid: task_uuid = "default"
         
     msg = None
-    try:
-        msg = await acc.get_messages(chatid, msgid)
-    except UserNotParticipant: return False
-    except Exception: return False
+    try: msg = await acc.get_messages(chatid, msgid)
+    except UserNotParticipant: return False, "failed"
+    except Exception: return False, "failed"
 
-    if not msg or msg.empty: return False
+    if not msg or msg.empty: return False, "deleted"
     
     if filter_thread_id is not None:
         if getattr(msg, "message_thread_id", None) != filter_thread_id:
-            return False
+            return False, "filtered"
 
     msg_type = get_message_type(msg)
-    if not msg_type: return False
+    if not msg_type: return False, "filtered"
 
     if allowed_types is not None and msg_type not in allowed_types:
-        return False
+        return False, "filtered"
 
-    if task_uuid and CANCEL_FLAGS.get(task_uuid): return False
-
-    try:
-        if status_message:
-            m_id = status_message.id
-            if f"{m_id}:down" in PROGRESS: del PROGRESS[f"{m_id}:down"]
-            if f"{m_id}:up" in PROGRESS: del PROGRESS[f"{m_id}:up"]
-    except Exception: pass
+    if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
 
     original_filename = "unknown_file"
-    if msg.document and msg.document.file_name: original_filename = msg.document.file_name
-    elif msg.video and msg.video.file_name: original_filename = msg.video.file_name
-    elif msg.audio and msg.audio.file_name: original_filename = msg.audio.file_name
+    if getattr(msg, "document", None) and getattr(msg.document, "file_name", None): original_filename = msg.document.file_name
+    elif getattr(msg, "video", None) and getattr(msg.video, "file_name", None): original_filename = msg.video.file_name
+    elif getattr(msg, "audio", None) and getattr(msg.audio, "file_name", None): original_filename = msg.audio.file_name
     elif msg_type == "Photo": original_filename = f"{msgid}.jpg"
     elif msg_type == "Voice": original_filename = f"{msgid}.ogg"
 
-    # 🚀 ORIGINAL NAME PRESERVED WITH SAFE CLEANING
+    # 🚀 ORIGINAL NAME & CAPTION SAFELY CLEANED (Only leading tags removed)
     caption_text = msg.caption.html if getattr(msg, "caption", None) else ""
     perfect_caption, perfect_filename = smart_rename(original_filename, caption_text)
     clean_caption = perfect_caption 
@@ -2287,14 +2355,14 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     forward_success = True
                 except Exception as e:
                     print(f"Task Fast-Copy blocked: {e}")
-        if forward_success: return True
+        if forward_success: return True, "success"
 
     if "Text" == msg_type:
         for dest in targets:
             text_content = msg.text.html if msg.text else ""
             try: await client.send_message(dest['dest_id'], text_content, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=dest.get('dest_thread'))
             except: pass
-        return True
+        return True, "success"
 
     task_folder_path = Path(f"./downloads/{user_id}/{task_uuid}/{msgid}/")
     task_folder_path.mkdir(parents=True, exist_ok=True)
@@ -2303,10 +2371,8 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     if not safe_filename.strip(): safe_filename = f"{msgid}.dat"
     file_path_to_save = task_folder_path / safe_filename
 
-    t_info = ACTIVE_PROCESSES.get(user_id, {}).get(task_uuid, {})
-    current_status_chat = t_info.get("status_chat_id", status_message.chat.id if status_message else message.chat.id)
-
-    down_task = asyncio.create_task(downstatus(client, status_message, current_status_chat, index, total_count, header_text))
+    chat_for_status = status_message.chat.id if status_message else message.chat.id
+    down_task = asyncio.create_task(downstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
     file_path = None
     ph_path = None
     download_success = False
@@ -2315,27 +2381,20 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
 
     try: 
         for attempt in range(3):
-            if task_uuid and CANCEL_FLAGS.get(task_uuid): return False
+            if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
             try:
                 msg_fresh = await acc.get_messages(chatid, msgid)
-                if msg_fresh.empty: return False
+                if msg_fresh.empty: return False, "deleted"
                 
                 file_size = getattr(msg_fresh.document, "file_size", 0) or getattr(msg_fresh.video, "file_size", 0) or getattr(msg_fresh.audio, "file_size", 0)
 
                 if file_size > split_limit:
-                    file_path = await acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
+                    file_path = await acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[task_uuid, "down"])
                     
                     if down_task and not down_task.done(): down_task.cancel()
-                    try:
-                        s_chat = t_info.get("status_chat_id", status_message.chat.id)
-                        s_msg = t_info.get("status_msg_id", status_message.id)
-                        await client.edit_message_text(s_chat, s_msg, f"✂️ **Splitting large file ({_pretty_bytes(file_size)})...**")
-                    except: pass
-
                     parts = await split_file_python(file_path, chunk_size=1900*1024*1024)
                     
-                    if f"{status_message.id}:up" in PROGRESS: del PROGRESS[f"{status_message.id}:up"]
-                    up_task = asyncio.create_task(upstatus(client, status_message, current_status_chat, index, total_count, header_text))
+                    up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
                     
                     async with USER_SEMAPHORES[user_id]:
                         async with SERVER_UPLOAD_LIMIT:
@@ -2347,7 +2406,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                                     retry_part = 0
                                     while retry_part < 5: 
                                         try:
-                                            await client.send_document(dest_chat_id, str(part), caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message, "up", task_uuid])
+                                            await client.send_document(dest_chat_id, str(part), caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
                                             break
                                         except FloodWait as e: 
                                             await asyncio.sleep(e.value + 5)
@@ -2361,15 +2420,15 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     if up_task and not up_task.done(): up_task.cancel()
                     try: os.remove(file_path)
                     except: pass
-                    return True 
+                    return True, "success" 
                 else:
                     try:
                         file_path = await asyncio.wait_for(
-                            acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid]),
+                            acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[task_uuid, "down"]),
                             timeout=1200
                         )
                     except asyncio.TimeoutError:
-                        return False
+                        return False, "failed"
                 
                 try:
                     thumb = None
@@ -2385,15 +2444,14 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 if e.value > 300: raise e
                 await asyncio.sleep(e.value + 5)
             except Exception as e:
-                if "CANCELLED" in str(e): return False
+                if "CANCELLED" in str(e): return False, "cancelled"
                 await asyncio.sleep(5)
 
         if down_task and not down_task.done(): down_task.cancel()
-        if not download_success: return False
-        if task_uuid and CANCEL_FLAGS.get(task_uuid): return False
+        if not download_success: return False, "failed"
+        if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
 
-        if f"{status_message.id}:up" in PROGRESS: del PROGRESS[f"{status_message.id}:up"]
-        up_task = asyncio.create_task(upstatus(client, status_message, current_status_chat, index, total_count, header_text))
+        up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
         
         uploader = client 
         upload_success = False
@@ -2408,11 +2466,11 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     while retry_count < 5: 
                         if task_uuid and CANCEL_FLAGS.get(task_uuid): break
                         try:
-                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
-                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
-                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
+                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
                             elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
-                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
+                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
                             elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
                             elif "Sticker" == msg_type: await uploader.send_sticker(dest_chat_id, file_path, reply_to_message_id=dest_thread_id)
                             success_local = True
@@ -2431,7 +2489,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 upload_success = True
         
         if up_task and not up_task.done(): up_task.cancel()
-        return upload_success
+        return (True, "success") if upload_success else (False, "failed")
 
     finally:
         try: await asyncio.to_thread(shutil.rmtree, task_folder_path, ignore_errors=True)

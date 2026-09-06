@@ -466,12 +466,12 @@ def smart_rename(filename, caption_text=""):
     def clean_leading_junk(text):
         while True:
             old_text = text
-            # Matches ONLY at the start: spaces, hyphens, brackets [..], or @username
-            text = re.sub(r'^[-~\s_]*\[.*?\][-~\s_]*', '', text)
-            text = re.sub(r'^[-~\s_]*@\S+[-~\s_]*', '', text)
+            # Matches ONLY at the start: ignores any emojis/symbols before [bracket] or @username
+            text = re.sub(r'^[^a-zA-Z0-9]*\[.*?\][^a-zA-Z0-9]*', '', text)
+            text = re.sub(r'^[^a-zA-Z0-9]*@[a-zA-Z0-9_]+[^a-zA-Z0-9]*', '', text)
             if old_text == text:
                 break
-        return text.strip(' -')
+        return text.strip(' -_:|')
         
     perfect_filename = clean_leading_junk(fname_str)
     if not perfect_filename:
@@ -2116,7 +2116,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
             primary_dest = targets[0]['dest_id'] if targets else "unknown_dest"
             saved_msg_id = await db.get_sync_progress(user_id, chatid_check, primary_dest)
-            
+
+            # 🚀 FIX: RESUME LOGIC (No Duplicate count, Total Msg equals only remaining files)
             if saved_msg_id >= toID:
                 skip_msg = (f"⏭ **DUPLICATE SKIPPED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n✅ **Status:** Files up to ID `{toID}` are already synced.")
                 try: await client.send_message(message.chat.id, skip_msg, reply_to_message_id=message.id)
@@ -2131,6 +2132,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 try: await client.send_message(message.chat.id, resume_msg, reply_to_message_id=message.id)
                 except: pass
 
+            # Total is now strictly what is LEFT to download
             total_count = max(1, toID - fromID + 1)
             
             try:
@@ -2144,7 +2146,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current": 0,
                 "fetched": 0,
                 "success": 0,
-                "duplicate": 0,
+                "duplicate": 0, 
                 "deleted": 0,
                 "skipped": 0,
                 "filtered": 0,
@@ -2152,6 +2154,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current_status_text": "Starting Batch..."
             })
 
+            # 🚀 0-SEC UI FIX WITH NEW CANCEL CONFIRMATION BUTTON
             initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
             cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
 
@@ -2381,10 +2384,23 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     elif msg_type == "Photo": original_filename = f"{msgid}.jpg"
     elif msg_type == "Voice": original_filename = f"{msgid}.ogg"
 
-    caption_text = msg.caption.html if getattr(msg, "caption", None) else ""
-    perfect_caption, perfect_filename = smart_rename(original_filename, caption_text)
+    # 🚀 TEXT MESSAGE BOLD FIX
+    if "Text" == msg_type:
+        raw_text = msg.text if getattr(msg, "text", None) else ""
+        perfect_text, _ = smart_rename("", raw_text)
+        # 🌟 NEW FEATURE: BOLD AND ITALIC TEXT MESSAGE
+        clean_text = f"<b><i>{perfect_text}</i></b>" if perfect_text else ""
+        for dest in targets:
+            try: await client.send_message(dest['dest_id'], clean_text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=dest.get('dest_thread'))
+            except: pass
+        return True, "success"
+
+    # 🚀 ORIGINAL NAME & CAPTION SAFELY CLEANED (Only leading tags removed)
+    # BUG FIX: Plain text fetch karke function me bheja taaki HTML tags regex break na kare!
+    raw_caption = msg.caption if getattr(msg, "caption", None) else ""
+    perfect_caption, perfect_filename = smart_rename(original_filename, raw_caption)
     
-    # 🌟 NEW FEATURE: ALL CAPTIONS IN BOLD AND ITALIC
+    # 🌟 NEW FEATURE: BOLD AND ITALIC CAPTION
     clean_caption = f"<b><i>{perfect_caption}</i></b>" if perfect_caption else ""
 
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):
@@ -2408,15 +2424,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     print(f"Task Fast-Copy blocked: {e}")
         if forward_success: return True, "success"
 
-    if "Text" == msg_type:
-        for dest in targets:
-            text_content = msg.text.html if getattr(msg, "text", None) else ""
-            # 🌟 NEW FEATURE: TEXT MESSAGES IN BOLD AND ITALIC
-            clean_text = f"<b><i>{text_content}</i></b>" if text_content else ""
-            try: await client.send_message(dest['dest_id'], clean_text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=dest.get('dest_thread'))
-            except: pass
-        return True, "success"
-
     task_folder_path = Path(f"./downloads/{user_id}/{task_uuid}/{msgid}/")
     task_folder_path.mkdir(parents=True, exist_ok=True)
 
@@ -2424,8 +2431,10 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     if not safe_filename.strip(): safe_filename = f"{msgid}.dat"
     file_path_to_save = task_folder_path / safe_filename
 
-    chat_for_status = status_message.chat.id if status_message else message.chat.id
-    down_task = asyncio.create_task(downstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
+    t_info = ACTIVE_PROCESSES.get(user_id, {}).get(task_uuid, {})
+    current_status_chat = t_info.get("status_chat_id", status_message.chat.id if status_message else message.chat.id)
+
+    down_task = asyncio.create_task(downstatus(client, status_message, current_status_chat, index, total_count, header_text, task_uuid, user_id))
     file_path = None
     ph_path = None
     download_success = False
@@ -2447,7 +2456,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     if down_task and not down_task.done(): down_task.cancel()
                     parts = await split_file_python(file_path, chunk_size=1900*1024*1024)
                     
-                    up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
+                    up_task = asyncio.create_task(upstatus(client, status_message, current_status_chat, index, total_count, header_text, task_uuid, user_id))
                     
                     async with USER_SEMAPHORES[user_id]:
                         async with SERVER_UPLOAD_LIMIT:
@@ -2504,7 +2513,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
         if not download_success: return False, "failed"
         if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
 
-        up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
+        up_task = asyncio.create_task(upstatus(client, status_message, current_status_chat, index, total_count, header_text, task_uuid, user_id))
         
         uploader = client 
         upload_success = False
@@ -2621,14 +2630,24 @@ async def process_watcher_message(client, message):
             fallback_to_download = False
             safe_source_id = message.chat.username if message.chat.username else chat_id
             
+            if msg_type == "Text":
+                raw_text = message.text if getattr(message, "text", None) else ""
+                perfect_text, _ = smart_rename("", raw_text)
+                # 🌟 NEW FEATURE: BOLD AND ITALIC TEXT FOR WATCHER
+                clean_text = f"<b><i>{perfect_text}</i></b>" if perfect_text else ""
+                for t in targets:
+                    try: await app.send_message(t['dest_id'], clean_text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=t.get('dest_thread'))
+                    except: pass
+                return
+
             original_filename = "unknown_file"
             if getattr(message, "document", None) and getattr(message.document, "file_name", None): original_filename = message.document.file_name
             elif getattr(message, "video", None) and getattr(message.video, "file_name", None): original_filename = message.video.file_name
             
-            caption_text = message.caption.html if getattr(message, "caption", None) else ""
-            perfect_caption, _ = smart_rename(original_filename, caption_text)
+            raw_caption = message.caption if getattr(message, "caption", None) else ""
+            perfect_caption, _ = smart_rename(original_filename, raw_caption)
             
-            # 🌟 NEW FEATURE: BOLD AND ITALIC CAPTION FOR WATCHER AS WELL
+            # 🌟 NEW FEATURE: BOLD AND ITALIC CAPTION FOR WATCHER
             clean_caption = f"<b><i>{perfect_caption}</i></b>" if perfect_caption else ""
 
             for t in targets:

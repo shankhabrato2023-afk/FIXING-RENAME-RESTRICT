@@ -404,7 +404,6 @@ def generate_bar(percent: float, length: int = 11) -> str:
         
     return bar
 
-# 🚀 BUG FIX: TOTAL MSG SHOWS IN UI
 def generate_aesthetic_progress_ui(task_info: dict, current_status: str = "Forwarding", percent: float = 0.0, footer_status: str = "FORWARDING") -> str:
     total = task_info.get("total", 0)
     success = task_info.get("success", 0)
@@ -459,19 +458,26 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX 1: ONLY LEADING TAGS REMOVED. .mkv AND .001 PRESERVED 100%
+# 🚀 BUG FIX 2: PERFECT JUNK REMOVAL LOGIC
 def smart_rename(filename, caption_text=""):
     fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     cap_str = str(caption_text or "").strip()
     
-    # Ye Regex sirf file/caption ke SURUWAAT (start) ke space, [brackets], aur @username ko hatayega
-    # Beech aur aakhir ke number aur extension safe rahenge
-    perfect_filename = re.sub(r'^(?:\s*(?:\[.*?\]|@\S+))+\s*', '', fname_str)
-    
-    if not perfect_filename.strip():
+    def clean_leading_junk(text):
+        while True:
+            old_text = text
+            # Safely matches ONLY at the start: spaces, hyphens, brackets [..], or @username
+            text = re.sub(r'^[-~\s_]*\[.*?\][-~\s_]*', '', text)
+            text = re.sub(r'^[-~\s_]*@\S+[-~\s_]*', '', text)
+            if old_text == text:
+                break
+        return text.strip()
+        
+    perfect_filename = clean_leading_junk(fname_str)
+    if not perfect_filename:
         perfect_filename = fname_str
         
-    perfect_caption = re.sub(r'^(?:\s*(?:\[.*?\]|@\S+))+\s*', '', cap_str)
+    perfect_caption = clean_leading_junk(cap_str)
     
     return perfect_caption, perfect_filename
 
@@ -676,7 +682,6 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
         status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
-        # 🚀 CANCEL CONFIRMATION PAUSE FIX
         if not task_info.get("confirming_cancel"):
             if status_text != last_text or task_info.get("force_update_ui"):
                 task_info["force_update_ui"] = False
@@ -725,7 +730,6 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
         status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
-        # 🚀 CANCEL CONFIRMATION PAUSE FIX
         if not task_info.get("confirming_cancel"):
             if status_text != last_text or task_info.get("force_update_ui"):
                 task_info["force_update_ui"] = False
@@ -781,7 +785,7 @@ async def send_start(client: Client, message: Message):
     except Exception as e:
         print(f"Failed to save user {user_id}: {e}")
 
-    welcome_video_url = "https://holy-field-055f.lucifermotivational.workers.dev/0:/Google%20Flow%20%E2%80%93%20Sept%2004%20-%2016-28.mp4"
+    welcome_video_url = "https://files.catbox.moe/o9azww.mp4"
     welcome_text = (
         f"<b>👋 Hi {message.from_user.mention}, I am Save Restricted Content Bot.</b>\n\n"
         "<b>For downloading restricted content /login first.</b>\n\n"
@@ -789,8 +793,8 @@ async def send_start(client: Client, message: Message):
     )
     
     buttons = [
-        [InlineKeyboardButton("❣️ Developer", url = "https://t.me/LuciferOpenSource")],
-        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/LuciferOpenSourceDiscussionGroup'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/LuciferOpenSource')]
+        [InlineKeyboardButton("❣️ Developer", url = "https://t.me/thanuj66")],
+        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/telegram'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/telegram')]
     ]
 
     try:
@@ -848,7 +852,6 @@ async def send_cancel(client: Client, message: Message):
     for tid, info in list(user_tasks.items()):
         label = info.get("item", "Task")
         label_short = (label[:26] + "...") if len(label) > 29 else label
-        # Changed to ask_cancel for Confirmation UI
         buttons.append([InlineKeyboardButton(f"🛑 {label_short}", callback_data=f"ask_cancel:{tid}")])
     buttons.append([InlineKeyboardButton("🛑 Cancel ALL My Tasks", callback_data="ask_cancel_all")])
     buttons.append([InlineKeyboardButton("❌ Close Menu", callback_data="close_menu")])
@@ -859,7 +862,6 @@ async def send_cancel(client: Client, message: Message):
         quote=True
     )
     
-# 🚀 ADDED CONFIRMATION LOGIC IN CALLBACK
 @app.on_callback_query(filters.regex(r"^cancel_") | filters.regex(r"^cancel_task:") | filters.regex(r"^ask_cancel") | filters.regex(r"^resume_task:"))
 async def cancel_callback(client: Client, query):
     user_id = query.from_user.id
@@ -918,7 +920,6 @@ async def cancel_callback(client: Client, query):
             user_tasks[task_uuid]["confirming_cancel"] = False
             user_tasks[task_uuid]["force_update_ui"] = True
             await query.answer("▶️ Task Resumed!", show_alert=False)
-            # If they resumed from the /cancel command list instead of live UI, just delete the message
             if query.message.id != user_tasks[task_uuid].get("status_msg_id"):
                 try: await query.message.delete()
                 except: pass
@@ -2111,9 +2112,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
             primary_dest = targets[0]['dest_id'] if targets else "unknown_dest"
             saved_msg_id = await db.get_sync_progress(user_id, chatid_check, primary_dest)
-
-            skip_duplicates_amount = 0
             
+            # 🚀 BUG FIX 1: PROPER RESUME LOGIC (EXCLUDES ALREADY PROCESSED FROM TOTAL)
             if saved_msg_id >= toID:
                 skip_msg = (f"⏭ **DUPLICATE SKIPPED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n✅ **Status:** Files up to ID `{toID}` are already synced.")
                 try: await client.send_message(message.chat.id, skip_msg, reply_to_message_id=message.id)
@@ -2123,13 +2123,13 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 return
                 
             elif saved_msg_id >= fromID and saved_msg_id < toID:
-                skip_duplicates_amount = (saved_msg_id - fromID) + 1
                 fromID = saved_msg_id + 1
                 resume_msg = (f"♻️ **AUTO-RESUME ACTIVATED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n▶️ **Resuming From ID:** `{fromID}`")
                 try: await client.send_message(message.chat.id, resume_msg, reply_to_message_id=message.id)
                 except: pass
 
-            total_count = max(1, toID - fromID + 1) + skip_duplicates_amount
+            # Only remaining files count!
+            total_count = max(1, toID - fromID + 1)
             
             try:
                 source_chat = await acc.get_chat(chatid_check)
@@ -2142,7 +2142,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current": 0,
                 "fetched": 0,
                 "success": 0,
-                "duplicate": skip_duplicates_amount,
+                "duplicate": 0, # Starts fresh at 0
                 "deleted": 0,
                 "skipped": 0,
                 "filtered": 0,
@@ -2150,7 +2150,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current_status_text": "Starting Batch..."
             })
 
-            # 🚀 0-SEC UI FIX WITH NEW CANCEL CONFIRMATION BUTTON
             initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
             cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
 
@@ -2196,14 +2195,20 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 except FloodWait as e:
                     if e.value > 300:
                         print(f"FloodWait too long ({e.value}s). Stopping task.")
-                        try: await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), f"❌ **Task Cancelled automatically**\nReason: FloodWait too long ({e.value}s).")
+                        try:
+                            s_chat = ACTIVE_PROCESSES[user_id][task_uuid].get("status_chat_id", status_message.chat.id)
+                            s_msg = ACTIVE_PROCESSES[user_id][task_uuid].get("status_msg_id", status_message.id)
+                            await client.edit_message_text(s_chat, s_msg, f"❌ **Task Cancelled automatically**\nReason: FloodWait too long ({e.value}s).")
                         except: pass
                         was_cancelled = True
                         break
 
                     wait_msg = f"⏳ **Rate Limiting Detected**\nSleeping for {e.value} seconds..."
                     try: 
-                        if not is_restricted and not task_info.get("confirming_cancel"): await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), wait_msg)
+                        if not is_restricted and not task_info.get("confirming_cancel"):
+                            s_chat = ACTIVE_PROCESSES[user_id][task_uuid].get("status_chat_id", status_message.chat.id)
+                            s_msg = ACTIVE_PROCESSES[user_id][task_uuid].get("status_msg_id", status_message.id)
+                            await client.edit_message_text(s_chat, s_msg, wait_msg)
                     except: pass
                     await asyncio.sleep(e.value + 5)
                     continue
@@ -2238,7 +2243,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 needs_refresh = task_info.get("needs_refresh", False)
                 force_update = task_info.get("force_update_ui", False)
                 
-                # 🚀 STATUS UPDATE INTERVAL AND PAUSE ON CANCEL CHECK
                 if not task_info.get("confirming_cancel"):
                     if (task_info["fetched"] % 5 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID or needs_refresh or force_update:
                         task_info["force_update_ui"] = False

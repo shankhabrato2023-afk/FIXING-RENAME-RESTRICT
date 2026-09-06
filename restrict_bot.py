@@ -458,7 +458,7 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX 2: PERFECT JUNK REMOVAL LOGIC
+# 🚀 BUG FIX 2: PERFECT JUNK REMOVAL LOGIC (Hyphens Supported!)
 def smart_rename(filename, caption_text=""):
     fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     cap_str = str(caption_text or "").strip()
@@ -466,12 +466,12 @@ def smart_rename(filename, caption_text=""):
     def clean_leading_junk(text):
         while True:
             old_text = text
-            # Safely matches ONLY at the start: spaces, hyphens, brackets [..], or @username
+            # Matches ONLY at the start: spaces, hyphens, brackets [..], or @username
             text = re.sub(r'^[-~\s_]*\[.*?\][-~\s_]*', '', text)
             text = re.sub(r'^[-~\s_]*@\S+[-~\s_]*', '', text)
             if old_text == text:
                 break
-        return text.strip()
+        return text.strip(' -')
         
     perfect_filename = clean_leading_junk(fname_str)
     if not perfect_filename:
@@ -1667,6 +1667,10 @@ async def filter_start_cb(client, query):
         PENDING_TASKS[user_id] = task_data 
         return await query.answer("❌ Select at least one type!", show_alert=True)
         
+    await query.answer("🚀 Proceeding...", show_alert=False)
+    try: await query.message.edit_text("⏳ **Initializing Task... Please Wait!**")
+    except Exception: pass
+    
     delay = task_data.get("delay", 3)
     if task_data.get("mode") == "WATCHER":
         await finalize_watcher_setup(client, query.message, task_data, delay, user_id=user_id)
@@ -2113,7 +2117,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
             primary_dest = targets[0]['dest_id'] if targets else "unknown_dest"
             saved_msg_id = await db.get_sync_progress(user_id, chatid_check, primary_dest)
             
-            # 🚀 BUG FIX 1: PROPER RESUME LOGIC (EXCLUDES ALREADY PROCESSED FROM TOTAL)
             if saved_msg_id >= toID:
                 skip_msg = (f"⏭ **DUPLICATE SKIPPED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n✅ **Status:** Files up to ID `{toID}` are already synced.")
                 try: await client.send_message(message.chat.id, skip_msg, reply_to_message_id=message.id)
@@ -2128,7 +2131,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 try: await client.send_message(message.chat.id, resume_msg, reply_to_message_id=message.id)
                 except: pass
 
-            # Only remaining files count!
             total_count = max(1, toID - fromID + 1)
             
             try:
@@ -2142,7 +2144,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current": 0,
                 "fetched": 0,
                 "success": 0,
-                "duplicate": 0, # Starts fresh at 0
+                "duplicate": 0,
                 "deleted": 0,
                 "skipped": 0,
                 "filtered": 0,
@@ -2195,20 +2197,14 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 except FloodWait as e:
                     if e.value > 300:
                         print(f"FloodWait too long ({e.value}s). Stopping task.")
-                        try:
-                            s_chat = ACTIVE_PROCESSES[user_id][task_uuid].get("status_chat_id", status_message.chat.id)
-                            s_msg = ACTIVE_PROCESSES[user_id][task_uuid].get("status_msg_id", status_message.id)
-                            await client.edit_message_text(s_chat, s_msg, f"❌ **Task Cancelled automatically**\nReason: FloodWait too long ({e.value}s).")
+                        try: await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), f"❌ **Task Cancelled automatically**\nReason: FloodWait too long ({e.value}s).")
                         except: pass
                         was_cancelled = True
                         break
 
                     wait_msg = f"⏳ **Rate Limiting Detected**\nSleeping for {e.value} seconds..."
                     try: 
-                        if not is_restricted and not task_info.get("confirming_cancel"):
-                            s_chat = ACTIVE_PROCESSES[user_id][task_uuid].get("status_chat_id", status_message.chat.id)
-                            s_msg = ACTIVE_PROCESSES[user_id][task_uuid].get("status_msg_id", status_message.id)
-                            await client.edit_message_text(s_chat, s_msg, wait_msg)
+                        if not is_restricted and not task_info.get("confirming_cancel"): await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), wait_msg)
                     except: pass
                     await asyncio.sleep(e.value + 5)
                     continue
@@ -2385,10 +2381,11 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     elif msg_type == "Photo": original_filename = f"{msgid}.jpg"
     elif msg_type == "Voice": original_filename = f"{msgid}.ogg"
 
-    # 🚀 ORIGINAL NAME & CAPTION SAFELY CLEANED (Only leading tags removed)
     caption_text = msg.caption.html if getattr(msg, "caption", None) else ""
     perfect_caption, perfect_filename = smart_rename(original_filename, caption_text)
-    clean_caption = perfect_caption 
+    
+    # 🌟 NEW FEATURE: ALL CAPTIONS IN BOLD AND ITALIC
+    clean_caption = f"<b><i>{perfect_caption}</i></b>" if perfect_caption else ""
 
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):
         forward_success = False
@@ -2413,8 +2410,10 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
 
     if "Text" == msg_type:
         for dest in targets:
-            text_content = msg.text.html if msg.text else ""
-            try: await client.send_message(dest['dest_id'], text_content, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=dest.get('dest_thread'))
+            text_content = msg.text.html if getattr(msg, "text", None) else ""
+            # 🌟 NEW FEATURE: TEXT MESSAGES IN BOLD AND ITALIC
+            clean_text = f"<b><i>{text_content}</i></b>" if text_content else ""
+            try: await client.send_message(dest['dest_id'], clean_text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=dest.get('dest_thread'))
             except: pass
         return True, "success"
 
@@ -2628,7 +2627,9 @@ async def process_watcher_message(client, message):
             
             caption_text = message.caption.html if getattr(message, "caption", None) else ""
             perfect_caption, _ = smart_rename(original_filename, caption_text)
-            clean_caption = perfect_caption
+            
+            # 🌟 NEW FEATURE: BOLD AND ITALIC CAPTION FOR WATCHER AS WELL
+            clean_caption = f"<b><i>{perfect_caption}</i></b>" if perfect_caption else ""
 
             for t in targets:
                 success = False

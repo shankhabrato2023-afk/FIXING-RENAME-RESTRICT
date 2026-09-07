@@ -467,7 +467,7 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX 3: PERFECT RENAMING LOGIC (UNDERSCORE & USERNAME FIX)
+# 🚀 BUG FIX 4: SMART QUALITY TAGGER (Adds 720p if missing)
 def smart_rename(filename, caption_text=""):
     fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     cap_str = str(caption_text or "").strip()
@@ -488,10 +488,20 @@ def smart_rename(filename, caption_text=""):
     
     if len(perfect_name) < 3: 
         perfect_name = name.replace('_', ' ')
+
+    # --- NEW LOGIC: SMART QUALITY ADDER ---
+    # Agar quality (2160p, 1080p, 720p, etc) nahi milti hai toh 720p add karega
+    quality_pattern = re.compile(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', re.IGNORECASE)
+    if not quality_pattern.search(perfect_name):
+        perfect_name = perfect_name + " 720p"
         
     perfect_filename = perfect_name + ext
-    perfect_caption = clean_text(cap_str)
     
+    perfect_caption = clean_text(cap_str)
+    if perfect_caption and not quality_pattern.search(perfect_caption):
+        perfect_caption = perfect_caption + " 720p"
+    # --------------------------------------
+
     return perfect_caption, perfect_filename
 
 async def check_link_restriction(user_id, link_text):
@@ -691,8 +701,9 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"📥 Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
+        current_action = f"📥 Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "DOWNLOADING")
+        status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
         if not task_info.get("confirming_cancel"):
             if status_text != last_text or task_info.get("force_update_ui"):
@@ -738,8 +749,9 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"📤 Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
+        current_action = f"📤 Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "UPLOADING")
+        status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
         if not task_info.get("confirming_cancel"):
             if status_text != last_text or task_info.get("force_update_ui"):
@@ -832,6 +844,14 @@ async def send_help(client: Client, message: Message):
         parse_mode=enums.ParseMode.HTML,
         disable_web_page_preview=True
     )
+
+@app.on_message(filters.command(["toggledl"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
+async def toggle_dl_command(client: Client, message: Message):
+    new_status = await db.toggle_dl_status()
+    if new_status:
+        await message.reply("✅ **Auto-Download is now ON.**\nBot will download files if direct fast-copy fails.")
+    else:
+        await message.reply("🚫 **Auto-Download is now OFF.**\nBot will ONLY direct-forward. If forwarding fails (restricted or floodwait), it will simply SKIP the file to save bandwidth.")
 
 @app.on_message(filters.command(["tasks", "progress"]) & filters.private)
 async def task_refresh_handler(client: Client, message: Message):
@@ -1018,12 +1038,15 @@ async def status_style_handler(client, message):
     
     watcher_count = await db.db.watchers.count_documents({})
     queue_text = "\n".join(queue_list) if queue_list else "😴 No active downloads."
+    
+    auto_dl = "ON ✅" if await db.get_dl_status() else "OFF ❌"
 
     msg = (
         f"🔰 **SYSTEM DASHBOARD**\n\n"
         f"⏱ **Uptime:** `{uptime_str}`\n"
         f"🧠 **RAM:** `{mem}%`  │  ⚙️ **CPU:** `{cpu}%` \n"
-        f"💿 **Disk Free:** `{disk_free:.1f} GB` \n\n"
+        f"💿 **Disk Free:** `{disk_free:.1f} GB` \n"
+        f"🔄 **Auto-Download:** `{auto_dl}` \n\n"
         f"👀 **Live Watchers:** `{watcher_count}` running\n"
         f"📉 **Active Downloads ({active_count})**\n"
         f"{queue_text}"
@@ -1484,7 +1507,7 @@ async def unwatch_callback(client, query):
 # --- CORE: receive links / start tasks / processing / cancel checks ---
 # ==============================================================================
 
-@app.on_message((filters.text | filters.caption) & filters.private & ~filters.command(["dl", "start", "help", "cancel", "botstats", "login", "logout", "broadcast", "status", "watch", "unwatch", "watchers", "removetarget", "removesource", "log", "tasks", "progress"]))
+@app.on_message((filters.text | filters.caption) & filters.private & ~filters.command(["dl", "start", "help", "cancel", "botstats", "login", "logout", "broadcast", "status", "watch", "unwatch", "watchers", "removetarget", "removesource", "log", "tasks", "progress", "toggledl"]))
 async def save(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id in PENDING_TASKS:

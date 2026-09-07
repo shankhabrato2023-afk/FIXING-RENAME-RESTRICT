@@ -59,7 +59,7 @@ STRING_SESSION = os.environ.get("STRING_SESSION", None)
 # Error Log Channel (Optional)
 LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "") 
 
-# ⏱ STATUS UPDATE TIME (Seconds) -> 10 Seconds par set hai
+# ⏱ STATUS UPDATE TIME (Seconds)
 STATUS_UPDATE_INTERVAL = int(os.environ.get("STATUS_UPDATE_INTERVAL", 10))
 
 # Queue System
@@ -296,9 +296,6 @@ app = Client(
     ipv6=False                  
 )
 
-# ==============================================================================
-# --- NATIVE ASK IMPLEMENTATION ---
-# ==============================================================================
 ASK_FUTURES = {}
 
 async def custom_ask(self, chat_id: int, text: str, filters=None, timeout: int = 300, **kwargs):
@@ -351,7 +348,6 @@ CANCEL_FLAGS = {}
 batch_temp = type("BT", (), {})()
 batch_temp.ACTIVE_TASKS = defaultdict(int)
 
-# --- ROBUST CONCURRENCY SETTINGS ---
 SERVER_UPLOAD_LIMIT = asyncio.Semaphore(30) 
 USER_SEMAPHORE_LIMIT = 3 
 USER_SEMAPHORES = defaultdict(lambda: asyncio.Semaphore(USER_SEMAPHORE_LIMIT))
@@ -461,109 +457,76 @@ def sanitize_filename(filename: str) -> str:
     filename = re.sub(r'[:]', "-", filename)
     filename = re.sub(r'[\\/*?"<>|\[\]]', "", filename)
     name, ext = os.path.splitext(filename)
-    if len(name) > 60:
-        name = name[:60]
-    if not ext:
-        ext = ".dat"
+    if len(name) > 60: name = name[:60]
+    if not ext: ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX 3: STRICT LEADING JUNK REMOVAL LOGIC
 def smart_rename(filename, caption_text=""):
     fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     cap_str = str(caption_text or "").strip()
     
-    def clean_start(text):
-        # Removes ONLY the very first bracket [...] or @username along with surrounding hyphens/spaces
-        res = re.sub(r'^[^a-zA-Z0-9]*(\[.*?\]|@[a-zA-Z0-9_]+)[^a-zA-Z0-9]*', '', text)
-        # We run it one more time just in case it starts with [@Username] - [HD_Tag]
-        res = re.sub(r'^[^a-zA-Z0-9]*(\[.*?\]|@[a-zA-Z0-9_]+)[^a-zA-Z0-9]*', '', res)
-        return res.strip(' -_:|')
+    def clean_leading_junk(text):
+        while True:
+            old_text = text
+            text = re.sub(r'^[^a-zA-Z0-9]*\[.*?\][^a-zA-Z0-9]*', '', text)
+            text = re.sub(r'^[^a-zA-Z0-9]*@[a-zA-Z0-9_]+[^a-zA-Z0-9]*', '', text)
+            if old_text == text: break
+        return text.strip(' -_:|')
         
-    perfect_filename = clean_start(fname_str)
-    if len(perfect_filename) < 3:
-        perfect_filename = fname_str
-        
-    perfect_caption = clean_start(cap_str)
+    perfect_filename = clean_leading_junk(fname_str)
+    if not perfect_filename: perfect_filename = fname_str
+    perfect_caption = clean_leading_junk(cap_str)
     
     return perfect_caption, perfect_filename
 
 async def check_link_restriction(user_id, link_text):
     clean_text = link_text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "")
-    
-    if "-" in clean_text:
-        clean_text = clean_text.split("-")[0].strip()
-        
+    if "-" in clean_text: clean_text = clean_text.split("-")[0].strip()
     parts = clean_text.split("/")
     
-    is_private = False
-    chat_id = None
-    msg_id = None
-
+    is_private = False; chat_id = None; msg_id = None
     try:
-        if "t.me/b/" in link_text:
-            return False, "🤖 **Bot Link:** Content availability depends on the bot."
-            
+        if "t.me/b/" in link_text: return False, "🤖 **Bot Link:** Content availability depends on the bot."
         if "t.me/c/" in link_text:
             is_private = True
             chat_id = int("-100" + parts[0])
-            if len(parts) > 1 and parts[-1].isdigit():
-                msg_id = int(parts[-1])
+            if len(parts) > 1 and parts[-1].isdigit(): msg_id = int(parts[-1])
         else:
             chat_id = parts[0]
-            if len(parts) > 1 and parts[-1].isdigit():
-                msg_id = int(parts[-1])
-            
-    except Exception as e:
-        return None, f"⚠️ **Could not analyze link.** Error: {e}"
+            if len(parts) > 1 and parts[-1].isdigit(): msg_id = int(parts[-1])
+    except Exception as e: return None, f"⚠️ **Could not analyze link.** Error: {e}"
 
     is_temp_client = False
     check_client = app 
-    
     if is_private:
         user_session = await db.get_session(user_id)
-        if not user_session:
-            return None, "🔒 **Private Link:** Please /login to verify restrictions."
-        
-        api_id = await db.get_api_id(user_id)
-        api_hash = await db.get_api_hash(user_id)
-        # Session Memory Flag Enabled
+        if not user_session: return None, "🔒 **Private Link:** Please /login to verify restrictions."
+        api_id = await db.get_api_id(user_id); api_hash = await db.get_api_hash(user_id)
         check_client = Client(f"check_{user_id}_{int(time.time())}", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False, in_memory=True)
         is_temp_client = True
 
-    is_restricted = False
-    status_msg = ""
-    
+    is_restricted = False; status_msg = ""
     try:
-        if is_temp_client:
-            await check_client.connect()
-            
+        if is_temp_client: await check_client.connect()
         if msg_id:
             msg = await check_client.get_messages(chat_id, msg_id)
             if getattr(msg.chat, "has_protected_content", False) or getattr(msg, "has_protected_content", False):
-                is_restricted = True
-                status_msg = "🔒 **Source is RESTRICTED** (Will use Download Mode)"
+                is_restricted = True; status_msg = "🔒 **Source is RESTRICTED** (Will use Download Mode)"
             else:
-                is_restricted = False
-                status_msg = "🔓 **Source is PUBLIC/UNRESTRICTED** (Will use Fast Forward)"
+                is_restricted = False; status_msg = "🔓 **Source is PUBLIC/UNRESTRICTED** (Will use Fast Forward)"
         else:
             chat = await check_client.get_chat(chat_id)
             if getattr(chat, "has_protected_content", False):
-                is_restricted = True
-                status_msg = "🔒 **Channel is RESTRICTED** (Will use Download Mode)"
+                is_restricted = True; status_msg = "🔒 **Channel is RESTRICTED** (Will use Download Mode)"
             else:
-                is_restricted = False
-                status_msg = "🔓 **Channel is PUBLIC/UNRESTRICTED**"
-            
+                is_restricted = False; status_msg = "🔓 **Channel is PUBLIC/UNRESTRICTED**"
     except Exception as e:
-        if "CHANNEL_PRIVATE" in str(e) or "USER_NOT_PARTICIPANT" in str(e):
-            status_msg = "⚠️ **Private Chat:** I can't check yet (You need to join first)."
-        else:
-            status_msg = f"⚠️ **Check Failed:** `{str(e)[:30]}...`"
+        if "CHANNEL_PRIVATE" in str(e) or "USER_NOT_PARTICIPANT" in str(e): status_msg = "⚠️ **Private Chat:** I can't check yet (You need to join first)."
+        else: status_msg = f"⚠️ **Check Failed:** `{str(e)[:30]}...`"
     finally:
         if is_temp_client:
             try: await check_client.disconnect()
             except: pass
-        
     return is_restricted, status_msg
     
 async def split_file_python(file_path, chunk_size=2000*1024*1024):
@@ -572,13 +535,9 @@ async def split_file_python(file_path, chunk_size=2000*1024*1024):
 
 def _split_file_smart(file_path, chunk_size):
     file_path = Path(file_path)
-    if not file_path.exists():
-        return []
-
+    if not file_path.exists(): return []
     file_size = os.path.getsize(file_path)
-    if file_size <= chunk_size:
-        return [file_path]
-
+    if file_size <= chunk_size: return [file_path]
     if shutil.which("split"):
         try:
             output_prefix = f"{file_path}.part"
@@ -587,7 +546,6 @@ def _split_file_smart(file_path, chunk_size):
             parts = sorted(list(file_path.parent.glob(f"{file_path.name}.part*")))
             if parts: return parts
         except Exception: pass
-
     seven_z_exe = shutil.which("7z") or shutil.which("7za")
     if seven_z_exe:
         try:
@@ -597,11 +555,7 @@ def _split_file_smart(file_path, chunk_size):
             parts = sorted(list(file_path.parent.glob(f"{file_path.name}.7z.*")))
             if parts: return parts
         except Exception: pass
-
-    part_num = 0
-    parts = []
-    buffer_size = 2 * 1024 * 1024 
-    
+    part_num = 0; parts = []; buffer_size = 2 * 1024 * 1024 
     with open(file_path, 'rb') as source:
         while True:
             part_name = file_path.parent / f"{file_path.name}.part{part_num:03d}"
@@ -616,55 +570,37 @@ def _split_file_smart(file_path, chunk_size):
             if current_chunk_size == 0:
                 if part_name.exists(): part_name.unlink()
                 break
-            parts.append(part_name)
-            part_num += 1
+            parts.append(part_name); part_num += 1
     return parts
-    
-def progress(current, total, message, typ, task_uuid=None):
-    if task_uuid and CANCEL_FLAGS.get(task_uuid):
-        raise Exception("CANCELLED_BY_USER")
 
-    try:
-        if task_uuid:
-            key = f"{task_uuid}:{typ}"
-        else:
-            msg_id = int(message.id)
-            chat_id = int(message.chat.id)
-            key = f"{chat_id}:{msg_id}:{typ}"
-    except:
-        return
-        
+# 🚀 BUG FIX: PROGRESS FUNCTION FIXED FOR UI UPDATES
+def progress(current, total, task_uuid, typ):
+    if task_uuid and CANCEL_FLAGS.get(task_uuid): raise Exception("CANCELLED_BY_USER")
+    
+    key = f"{task_uuid}:{typ}"
     now = time.time()
     if key not in PROGRESS:
-        PROGRESS[key] = {
-            "current": 0, "total": int(total), "percent": 0.0,
-            "last_time": now, "last_current": 0, "speed": 0.0, "eta": None
-        }
+        PROGRESS[key] = {"current": 0, "total": int(total), "percent": 0.0, "last_time": now, "last_current": 0, "speed": 0.0, "eta": None}
+    
     rec = PROGRESS[key]
-    rec["current"] = int(current)
-    rec["total"] = int(total)
-    if total > 0:
-        rec["percent"] = (current / total) * 100.0
+    rec["current"] = int(current); rec["total"] = int(total)
+    if total > 0: rec["percent"] = (current / total) * 100.0
+    
     dt = now - rec["last_time"]
     if dt >= 1 or current == total:
         delta_bytes = current - rec["last_current"]
         if dt <= 0: dt = 0.1
         speed = delta_bytes / dt
-        rec["speed"] = speed
-        rec["last_time"] = now
-        rec["last_current"] = current
-        if speed > 0 and total > current:
-            rec["eta"] = (total - current) / speed
+        rec["speed"] = speed; rec["last_time"] = now; rec["last_current"] = current
+        if speed > 0 and total > current: rec["eta"] = (total - current) / speed
             
 async def downstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = "", task_uuid: str = None, user_id: int = None):
     original_msg_id = status_message.id if status_message else 0
     original_chat_id = chat
-    key = f"{task_uuid}:down" if task_uuid else f"{original_chat_id}:{original_msg_id}:down"
+    key = f"{task_uuid}:down" 
     last_text = ""
     while True:
-        current_msg_id = original_msg_id
-        current_chat_id = original_chat_id
-        task_info = {}
+        current_msg_id = original_msg_id; current_chat_id = original_chat_id; task_info = {}
         if task_uuid and user_id:
             task_info = ACTIVE_PROCESSES.get(user_id, {}).get(task_uuid, {})
             current_msg_id = task_info.get("status_msg_id", original_msg_id)
@@ -674,19 +610,16 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
 
         rec = PROGRESS.get(key)
         if not rec:
-            await asyncio.sleep(1)
-            continue
-        if rec["current"] == rec["total"] and rec["total"] > 0:
-            break
+            await asyncio.sleep(1); continue
+        if rec["current"] == rec["total"] and rec["total"] > 0: break
             
         speed = f"{_pretty_bytes(rec.get('speed', 0))}/s"
         size_str = f"{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}"
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
-        status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
-        status_text += f"\n\n**⏳ ETA:** {eta_str}"
+        current_action = f"📥 Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
+        status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "DOWNLOADING")
 
         if not task_info.get("confirming_cancel"):
             if status_text != last_text or task_info.get("force_update_ui"):
@@ -695,24 +628,19 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
                     await client.edit_message_text(current_chat_id, current_msg_id, status_text, reply_markup=kb)
                     last_text = status_text
-                except Exception:
-                    pass
+                except: pass
         
         total_size = rec.get("total", 0)
-        if total_size > 0 and total_size < 50 * 1024 * 1024:
-            await asyncio.sleep(8) 
-        else:
-            await asyncio.sleep(15)
+        if total_size > 0 and total_size < 50 * 1024 * 1024: await asyncio.sleep(8) 
+        else: await asyncio.sleep(15)
             
 async def upstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = "", task_uuid: str = None, user_id: int = None):
     original_msg_id = status_message.id if status_message else 0
     original_chat_id = chat
-    key = f"{task_uuid}:up" if task_uuid else f"{original_chat_id}:{original_msg_id}:up"
+    key = f"{task_uuid}:up"
     last_text = ""
     while True:
-        current_msg_id = original_msg_id
-        current_chat_id = original_chat_id
-        task_info = {}
+        current_msg_id = original_msg_id; current_chat_id = original_chat_id; task_info = {}
         if task_uuid and user_id:
             task_info = ACTIVE_PROCESSES.get(user_id, {}).get(task_uuid, {})
             current_msg_id = task_info.get("status_msg_id", original_msg_id)
@@ -722,19 +650,16 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
         
         rec = PROGRESS.get(key)
         if not rec:
-            await asyncio.sleep(1)
-            continue
-        if rec["current"] == rec["total"] and rec["total"] > 0:
-            break
+            await asyncio.sleep(1); continue
+        if rec["current"] == rec["total"] and rec["total"] > 0: break
             
         speed = f"{_pretty_bytes(rec.get('speed', 0))}/s"
         size_str = f"{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}"
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
-        status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "FORWARDING")
-        status_text += f"\n\n**⏳ ETA:** {eta_str}"
+        current_action = f"📤 Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
+        status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "UPLOADING")
 
         if not task_info.get("confirming_cancel"):
             if status_text != last_text or task_info.get("force_update_ui"):
@@ -743,14 +668,11 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
                     kb = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
                     await client.edit_message_text(current_chat_id, current_msg_id, status_text, reply_markup=kb)
                     last_text = status_text
-                except Exception:
-                    pass
+                except: pass
         
         total_size = rec.get("total", 0)
-        if total_size > 0 and total_size < 50 * 1024 * 1024:
-            await asyncio.sleep(8) 
-        else:
-            await asyncio.sleep(15)
+        if total_size > 0 and total_size < 50 * 1024 * 1024: await asyncio.sleep(8) 
+        else: await asyncio.sleep(15)
             
 def get_message_type(msg: Message):
     if msg.document: return "Document"
@@ -769,27 +691,18 @@ def get_message_type(msg: Message):
 
 async def test_destination_access(client: Client, chat_id, thread_id=None):
     try:
-        test_msg = await client.send_message(
-            chat_id=chat_id,
-            text="🔄 **Testing Destination Accessibility...**\n*(This message will self-destruct)*",
-            reply_to_message_id=thread_id
-        )
+        test_msg = await client.send_message(chat_id=chat_id, text="🔄 **Testing Destination Accessibility...**\n*(This message will self-destruct)*", reply_to_message_id=thread_id)
         await test_msg.delete()
         return True, "Success"
-    except Exception as e:
-        return False, str(e)
+    except Exception as e: return False, str(e)
         
 @app.on_message(filters.command(["start"]) & (filters.private | filters.group))
 async def send_start(client: Client, message: Message):
-    user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    
+    user_id = message.from_user.id; user_name = message.from_user.first_name
     try:
         if not await db.is_user_exist(user_id):
             await db.add_user(user_id, user_name)
-            print(f"New user {user_id} saved to database.") 
-    except Exception as e:
-        print(f"Failed to save user {user_id}: {e}")
+    except Exception: pass
 
     welcome_video_url = "https://files.catbox.moe/o9azww.mp4"
     welcome_text = (
@@ -797,38 +710,15 @@ async def send_start(client: Client, message: Message):
         "<b>For downloading restricted content /login first.</b>\n\n"
         "<b>Know how to use bot by - /help</b>"
     )
-    
-    buttons = [
-        [InlineKeyboardButton("❣️ Developer", url = "https://t.me/thanuj66")],
-        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/telegram'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/telegram')]
-    ]
+    buttons = [[InlineKeyboardButton("❣️ Developer", url = "https://t.me/thanuj66")], [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/telegram'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/telegram')]]
 
-    try:
-        await client.send_video(
-            chat_id=message.chat.id, 
-            video=welcome_video_url, 
-            caption=welcome_text, 
-            reply_markup=InlineKeyboardMarkup(buttons),
-            reply_to_message_id=message.id
-        )
-    except Exception as e:
-        await client.send_message(
-            chat_id=message.chat.id,
-            text=welcome_text,
-            reply_markup=InlineKeyboardMarkup(buttons),
-            reply_to_message_id=message.id
-        )
+    try: await client.send_video(chat_id=message.chat.id, video=welcome_video_url, caption=welcome_text, reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=message.id)
+    except Exception: await client.send_message(chat_id=message.chat.id, text=welcome_text, reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=message.id)
 
 @app.on_message(filters.command(["help"]) & (filters.private | filters.group))
 async def send_help(client: Client, message: Message):
-    await client.send_message(
-        message.chat.id, 
-        text=HELP_TXT,
-        parse_mode=enums.ParseMode.HTML,
-        disable_web_page_preview=True
-    )
+    await client.send_message(message.chat.id, text=HELP_TXT, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True)
 
-# 🌟 NEW COMMAND: TOGGLE DOWNLOAD STATUS
 @app.on_message(filters.command(["toggledl"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def toggle_dl_command(client: Client, message: Message):
     new_status = await db.toggle_dl_status()
@@ -841,8 +731,7 @@ async def toggle_dl_command(client: Client, message: Message):
 async def task_refresh_handler(client: Client, message: Message):
     user_id = message.from_user.id
     user_tasks = ACTIVE_PROCESSES.get(user_id, {})
-    if not user_tasks:
-        return await message.reply("💤 **No active tasks running.**")
+    if not user_tasks: return await message.reply("💤 **No active tasks running.**")
         
     for task_uuid, info in list(user_tasks.items()):
         if CANCEL_FLAGS.get(task_uuid): continue
@@ -852,16 +741,13 @@ async def task_refresh_handler(client: Client, message: Message):
 @app.on_message(filters.command(["cancel"]) & (filters.private | filters.group))
 async def send_cancel(client: Client, message: Message):
     user_id = message.from_user.id
-
     if user_id in PENDING_TASKS:
         del PENDING_TASKS[user_id]
         await message.reply("✅ **Setup process cancelled.** You can send a new link now.")
         return
 
     user_tasks = ACTIVE_PROCESSES.get(user_id, {})
-    if not user_tasks:
-        await message.reply("✅ **No active tasks to cancel.**\n\n*(Note: To remove a Watcher, please use the /watchers command and click Delete, or use /unwatch)*")
-        return
+    if not user_tasks: return await message.reply("✅ **No active tasks to cancel.**\n\n*(Note: To remove a Watcher, please use the /watchers command and click Delete, or use /unwatch)*")
 
     buttons = []
     for tid, info in list(user_tasks.items()):
@@ -871,43 +757,31 @@ async def send_cancel(client: Client, message: Message):
     buttons.append([InlineKeyboardButton("🛑 Cancel ALL My Tasks", callback_data="ask_cancel_all")])
     buttons.append([InlineKeyboardButton("❌ Close Menu", callback_data="close_menu")])
 
-    await message.reply(
-        "**🚫 Cancel Tasks**\n\nSelect the task you want to cancel:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        quote=True
-    )
+    await message.reply("**🚫 Cancel Tasks**\n\nSelect the task you want to cancel:", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
     
 @app.on_callback_query(filters.regex(r"^cancel_") | filters.regex(r"^cancel_task:") | filters.regex(r"^ask_cancel") | filters.regex(r"^resume_task:"))
 async def cancel_callback(client: Client, query):
-    user_id = query.from_user.id
-    data = query.data
+    user_id = query.from_user.id; data = query.data
 
     if data == "cancel_setup":
-        if user_id in PENDING_TASKS:
-            del PENDING_TASKS[user_id]
+        if user_id in PENDING_TASKS: del PENDING_TASKS[user_id]
         await query.message.edit("❌ **Task Setup Cancelled.**")
         return
 
     if data == "ask_cancel_all":
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ YES, CANCEL ALL", callback_data="cancel_all")],
-            [InlineKeyboardButton("❌ NO, GO BACK", callback_data="close_menu")]
-        ])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ YES, CANCEL ALL", callback_data="cancel_all")], [InlineKeyboardButton("❌ NO, GO BACK", callback_data="close_menu")]])
         await query.message.edit("**⚠️ Are you sure you want to cancel ALL active tasks?**", reply_markup=kb)
         return
 
     if data == "cancel_all":
-        if user_id in TASK_QUEUE:
-            TASK_QUEUE[user_id].clear()
-        
+        if user_id in TASK_QUEUE: TASK_QUEUE[user_id].clear()
         user_tasks = list(ACTIVE_PROCESSES.get(user_id, {}).keys())
         if not user_tasks:
             await query.answer("No active tasks to cancel.", show_alert=True)
             try: await query.message.delete()
             except: pass
             return
-        for tid in user_tasks:
-            CANCEL_FLAGS[tid] = True 
+        for tid in user_tasks: CANCEL_FLAGS[tid] = True 
         await query.message.edit("**🛑 Cancelling ALL your tasks...**\n(This may take a moment to stop current downloads)")
         return
 
@@ -919,12 +793,8 @@ async def cancel_callback(client: Client, query):
             try: await query.message.delete()
             except: pass
             return
-            
         user_tasks[task_uuid]["confirming_cancel"] = True
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ YES, CANCEL", callback_data=f"cancel_task:{task_uuid}")],
-            [InlineKeyboardButton("❌ NO, RESUME", callback_data=f"resume_task:{task_uuid}")]
-        ])
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ YES, CANCEL", callback_data=f"cancel_task:{task_uuid}")], [InlineKeyboardButton("❌ NO, RESUME", callback_data=f"resume_task:{task_uuid}")]])
         await query.message.edit("⚠️ **Are you sure you want to cancel this task?**\n\n*(Background progress will pause updating here until you choose)*", reply_markup=kb)
         return
 
@@ -958,46 +828,23 @@ async def cancel_callback(client: Client, query):
         
 @app.on_callback_query(filters.regex("^close_menu"))
 async def close_menu(client, query):
-    try:
-        await query.message.delete()
-    except:
-        await query.answer("Menu closed.")
+    try: await query.message.delete()
+    except: await query.answer("Menu closed.")
 
 @app.on_message(filters.command(["pixel"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def pixel_bypass_handler(client: Client, message: Message):
-    if len(message.command) < 2:
-        return await message.reply(
-            "**Usage:**\n`/pixel https://pixeldrain.com/u/xxxx`\n\n"
-            "Or multiple comma-separated links:\n"
-            "`/pixel link1,link2,link3`"
-        )
-
+    if len(message.command) < 2: return await message.reply("**Usage:**\n`/pixel https://pixeldrain.com/u/xxxx`\n\nOr multiple comma-separated links:\n`/pixel link1,link2,link3`")
     input_text = message.text.split(None, 1)[1]
     matches = re.findall(r"pixeldrain\.com/u/([a-zA-Z0-9_-]+)", input_text)
-    
-    if not matches:
-        return await message.reply(
-            "❌ **No valid Pixeldrain links found.**\n"
-            "Please ensure the links follow the format: `https://pixeldrain.com/u/XXXX`"
-        )
+    if not matches: return await message.reply("❌ **No valid Pixeldrain links found.**\nPlease ensure the links follow the format: `https://pixeldrain.com/u/XXXX`")
 
     lines = []
     for match in matches:
         orig = f"https://pixeldrain.com/u/{match}"
         byp = f"https://cdn.pixeldrain.eu.cc/{match}"
         lines.append(f"🔗 **Original:** {orig}\n🔓 **Bypassed:** `{byp}`\n")
-        
     bypassed_text = "\n".join(lines)
-    
-    reply_text = (
-        "✨ **Pixeldrain Bypass Successful!** ✨\n\n"
-        "**📥 Bypassed Links:**\n\n"
-        f"{bypassed_text}\n"
-        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n"
-        "🌐 **Original Bypass Website:** [Click Here](https://pixeldrain-bypass.gamedrive.org/)\n"
-        "📜 **Userscript:** [Install Script](https://pixeldrain-bypass.gamedrive.org/pixeldrain-bypass.user.js)"
-    )
-    
+    reply_text = f"✨ **Pixeldrain Bypass Successful!** ✨\n\n**📥 Bypassed Links:**\n\n{bypassed_text}\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n🌐 **Original Bypass Website:** [Click Here](https://pixeldrain-bypass.gamedrive.org/)\n📜 **Userscript:** [Install Script](https://pixeldrain-bypass.gamedrive.org/pixeldrain-bypass.user.js)"
     await message.reply(reply_text, disable_web_page_preview=True)
 
 @app.on_message(filters.command(["status"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
@@ -1006,13 +853,10 @@ async def status_style_handler(client, message):
     uptime_str = get_readable_time(uptime_seconds)
     mem = psutil.virtual_memory().percent
     cpu = psutil.cpu_percent()
-    
     total, used, free = shutil.disk_usage(".")
     disk_free = free / (1024**3)
     
-    active_count = 0
-    queue_list = []
-    
+    active_count = 0; queue_list = []
     for uid, tasks in ACTIVE_PROCESSES.items():
         for t_id, info in tasks.items():
             active_count += 1
@@ -1022,27 +866,15 @@ async def status_style_handler(client, message):
     
     watcher_count = await db.db.watchers.count_documents({})
     queue_text = "\n".join(queue_list) if queue_list else "😴 No active downloads."
-    
     auto_dl = "ON ✅" if await db.get_dl_status() else "OFF ❌"
 
-    msg = (
-        f"🔰 **SYSTEM DASHBOARD**\n\n"
-        f"⏱ **Uptime:** `{uptime_str}`\n"
-        f"🧠 **RAM:** `{mem}%`  │  ⚙️ **CPU:** `{cpu}%` \n"
-        f"💿 **Disk Free:** `{disk_free:.1f} GB` \n"
-        f"🔄 **Auto-Download:** `{auto_dl}` \n\n"
-        f"👀 **Live Watchers:** `{watcher_count}` running\n"
-        f"📉 **Active Downloads ({active_count})**\n"
-        f"{queue_text}"
-    )
+    msg = f"🔰 **SYSTEM DASHBOARD**\n\n⏱ **Uptime:** `{uptime_str}`\n🧠 **RAM:** `{mem}%`  │  ⚙️ **CPU:** `{cpu}%` \n💿 **Disk Free:** `{disk_free:.1f} GB`\n🔄 **Auto-Download Fallback:** `{auto_dl}`\n\n👀 **Live Watchers:** `{watcher_count}` running\n📉 **Active Downloads ({active_count})**\n{queue_text}"
     await message.reply(msg, quote=True)
     
 @app.on_message(filters.command(["log"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def send_log_handler(client: Client, message: Message):
-    if os.path.exists("bot.log"):
-        await message.reply_document("bot.log", caption="📄 **Bot Logs**\n(Updates automatically)")
-    else:
-        await message.reply("⚠️ Log file not found yet.")
+    if os.path.exists("bot.log"): await message.reply_document("bot.log", caption="📄 **Bot Logs**\n(Updates automatically)")
+    else: await message.reply("⚠️ Log file not found yet.")
 
 @app.on_message(filters.command(["botstats"]) & filters.user(ADMINS))
 async def bot_stats_handler(client: Client, message: Message):
@@ -1053,43 +885,24 @@ async def bot_stats_handler(client: Client, message: Message):
     logged_in_list = []
     async for user in all_users_cursor:
         if user.get("session"):
-            user_id = user['id']
-            name = user.get("name") or f"User:{user_id}"
+            user_id = user['id']; name = user.get("name") or f"User:{user_id}"
             user_tasks = ACTIVE_PROCESSES.get(user_id, {})
-            
             if user_tasks:
                 task_details = []
                 for t_id, info in user_tasks.items():
-                    src = info.get("source_title", "Source")
-                    dst = info.get("dest_title", "Dest")
-                    tot = info.get("total", 0)
-                    curr = info.get("current", 0)
-                    start_t = info.get("started", time.time())
-                    
+                    src = info.get("source_title", "Source"); dst = info.get("dest_title", "Dest")
+                    tot = info.get("total", 0); curr = info.get("current", 0); start_t = info.get("started", time.time())
                     percent = (curr / tot * 100) if tot > 0 else 0
-                    
                     elapsed = time.time() - start_t
                     eta_str = "Calculating..."
-                    if curr > 0 and elapsed > 0:
-                        eta_str = get_readable_time(int(((tot - curr) / (curr / elapsed))))
-
-                    task_details.append(
-                        f"      └ 🏃 {src} → {info.get('dest_title_name', 'Destination')}"
-                    )
-                    
+                    if curr > 0 and elapsed > 0: eta_str = get_readable_time(int(((tot - curr) / (curr / elapsed))))
+                    task_details.append(f"      └ 🏃 {src} → {info.get('dest_title_name', 'Destination')}")
                 tasks_str = "\n" + "\n".join(task_details)
                 logged_in_list.append(f"• **{name}** [`{user_id}`]{tasks_str}")
-            else:
-                logged_in_list.append(f"• **{name}** [`{user_id}`] (IDLE 😴)")
+            else: logged_in_list.append(f"• **{name}** [`{user_id}`] (IDLE 😴)")
 
     logged_in_text = "\n\n".join(logged_in_list) if logged_in_list else "No users logged in."
-    stats_msg = (
-        "📊 **DETAILED BOT STATISTICS**\n"
-        "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n"
-        f"👥 **Total Users:** `{total_users}`\n"
-        f"🔑 **Logged-in Users:** `{len(logged_in_list)}`\n\n"
-        f"📝 **User & Task Breakdown:**\n\n{logged_in_text}"
-    )
+    stats_msg = f"📊 **DETAILED BOT STATISTICS**\n▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬\n\n👥 **Total Users:** `{total_users}`\n🔑 **Logged-in Users:** `{len(logged_in_list)}`\n\n📝 **User & Task Breakdown:**\n\n{logged_in_text}"
     await wait.edit(stats_msg)
         
 # ==============================================================================
@@ -1099,117 +912,69 @@ async def bot_stats_handler(client: Client, message: Message):
 @app.on_message(filters.private & ~filters.forwarded & filters.command(["logout"]))
 async def logout(client, message):
     user_id = message.from_user.id
-    if not await db.is_user_exist(user_id):
-        return await message.reply_text("You are not logged in.")
-
+    if not await db.is_user_exist(user_id): return await message.reply_text("You are not logged in.")
     status_msg = await message.reply("📡 **Connecting to Telegram to terminate session...**")
-
     session_string = await db.get_session(user_id)
-    api_id = await db.get_api_id(user_id)
-    api_hash = await db.get_api_hash(user_id)
+    api_id = await db.get_api_id(user_id); api_hash = await db.get_api_hash(user_id)
 
     if session_string:
         user_client = None
         try:
-            use_api_id = int(api_id) if api_id else API_ID
-            use_api_hash = api_hash if api_hash else API_HASH
-            
-            user_client = Client(
-                f"logout_{user_id}_{int(time.time())}", 
-                session_string=session_string, 
-                api_id=use_api_id, 
-                api_hash=use_api_hash,
-                no_updates=True,
-                in_memory=True
-            )
-            
+            use_api_id = int(api_id) if api_id else API_ID; use_api_hash = api_hash if api_hash else API_HASH
+            user_client = Client(f"logout_{user_id}_{int(time.time())}", session_string=session_string, api_id=use_api_id, api_hash=use_api_hash, no_updates=True, in_memory=True)
             await user_client.connect()
             try:
                 await user_client.log_out()
                 await status_msg.edit("✅ **Session successfully removed from Telegram Devices.**")
             except Exception as e:
-                if "terminated" in str(e) or "Connection" in str(e):
-                    await status_msg.edit("✅ **Session terminated successfully.**")
-                else:
-                    raise e
-            
-        except AuthKeyUnregistered:
-            await status_msg.edit("⚠️ **Session was already invalid.** Cleaning local database...")
+                if "terminated" in str(e) or "Connection" in str(e): await status_msg.edit("✅ **Session terminated successfully.**")
+                else: raise e
+        except AuthKeyUnregistered: await status_msg.edit("⚠️ **Session was already invalid.** Cleaning local database...")
         except Exception as e:
             print(f"Remote logout warning: {e}")
             await status_msg.edit("✅ **Local session cleared.** (Remote session might already be gone)")
         finally:
             try:
-                if user_client and user_client.is_connected:
-                    await user_client.disconnect()
+                if user_client and user_client.is_connected: await user_client.disconnect()
             except: pass
 
     if user_id in USER_CLIENTS:
-        try:
-            await USER_CLIENTS[user_id].stop()
-        except Exception:
-            pass
+        try: await USER_CLIENTS[user_id].stop()
+        except: pass
         del USER_CLIENTS[user_id]
 
-    await db.set_session(user_id, session=None)
-    await db.set_api_id(user_id, api_id=None)
-    await db.set_api_hash(user_id, api_hash=None)
-    
+    await db.set_session(user_id, session=None); await db.set_api_id(user_id, api_id=None); await db.set_api_hash(user_id, api_hash=None)
     await message.reply("**Logout Complete** ♦\n(You are now disconnected)")
 
 @app.on_message(filters.private & ~filters.forwarded & filters.command(["login"]))
 async def login_handler(bot: Client, message: Message):
-    
-    if not await db.is_user_exist(message.from_user.id):
-        await db.add_user(message.from_user.id, message.from_user.first_name)
-        
+    if not await db.is_user_exist(message.from_user.id): await db.add_user(message.from_user.id, message.from_user.first_name)
     user_data = await db.get_session(message.from_user.id)
-    if user_data is not None:
-        await message.reply("**You Are Already Logged In. First /logout Your Old Session. Then Do Login.**")
-        return  
+    if user_data is not None: return await message.reply("**You Are Already Logged In. First /logout Your Old Session. Then Do Login.**")
     user_id = int(message.from_user.id)
 
     if API_ID != 0 and API_HASH:
         await message.reply("**🔑 Specific API ID and HASH found in variables. Using them automatically...**")
-        api_id = API_ID
-        api_hash = API_HASH
+        api_id = API_ID; api_hash = API_HASH
     else:
         api_id_msg = await bot.ask(user_id, "<b>Send Your API ID.</b>", filters=filters.text)
-        if api_id_msg.text == '/cancel':
-            return await api_id_msg.reply('<b>process cancelled !</b>')
+        if api_id_msg.text == '/cancel': return await api_id_msg.reply('<b>process cancelled !</b>')
         try:
             api_id = int(api_id_msg.text)
-            if api_id < 1000000 or api_id > 99999999:
-                 await api_id_msg.reply("**❌ Invalid API ID**\n\nPlease start again with /login.", quote=True)
-                 return
-        except ValueError:
-            await api_id_msg.reply("**Api id must be an integer, start your process again by /login**", quote=True)
-            return
-        
+            if api_id < 1000000 or api_id > 99999999: return await api_id_msg.reply("**❌ Invalid API ID**\n\nPlease start again with /login.", quote=True)
+        except ValueError: return await api_id_msg.reply("**Api id must be an integer, start your process again by /login**", quote=True)
         api_hash_msg = await bot.ask(user_id, "**Now Send Me Your API HASH**", filters=filters.text)
-        if api_hash_msg.text == '/cancel':
-            return await api_hash_msg.reply('<b>process cancelled !</b>')
+        if api_hash_msg.text == '/cancel': return await api_hash_msg.reply('<b>process cancelled !</b>')
         api_hash = api_hash_msg.text
+        if len(api_hash) != 32: return await api_hash_msg.reply("**❌ Invalid API HASH**\n\nPlease start again with /login.", quote=True)
 
-        if len(api_hash) != 32:
-             await api_hash_msg.reply("**❌ Invalid API HASH**\n\nPlease start again with /login.", quote=True)
-             return
-
-    login_text = (
-        "🔐 **Login Process Initiated**\n\n"
-        "Please send your **Phone Number** in international format.\n"
-        "Example: `+1234567890`\n\n"
-        "🛡️ *Your session is stored securely locally.*"
-    )
-
+    login_text = "🔐 **Login Process Initiated**\n\nPlease send your **Phone Number** in international format.\nExample: `+1234567890`\n\n🛡️ *Your session is stored securely locally.*"
     phone_number_msg = await bot.ask(chat_id=user_id, text=login_text, filters=filters.text)
-    if phone_number_msg.text=='/cancel':
-        return await phone_number_msg.reply('<b>process cancelled !</b>')
+    if phone_number_msg.text=='/cancel': return await phone_number_msg.reply('<b>process cancelled !</b>')
     phone_number = phone_number_msg.text
     
     client_auth = Client(f"login_{user_id}_{int(time.time())}", api_id=api_id, api_hash=api_hash, in_memory=True)
     await client_auth.connect()
-    
     await phone_number_msg.reply("Sending OTP...")
     try:
         code = await client_auth.send_code(phone_number)
@@ -1228,12 +993,10 @@ async def login_handler(bot: Client, message: Message):
         await client_auth.sign_in(phone_number, code.phone_code_hash, phone_code)
     except PhoneCodeInvalid:
         await phone_code_msg.reply('**OTP is invalid.**')
-        await client_auth.disconnect()
-        return
+        await client_auth.disconnect(); return
     except PhoneCodeExpired:
         await phone_code_msg.reply('**OTP is expired.**')
-        await client_auth.disconnect()
-        return
+        await client_auth.disconnect(); return
     except SessionPasswordNeeded:
         two_step_msg = await bot.ask(user_id, '**Your account has enabled two-step verification. Please provide the password.\n\nEnter /cancel to cancel The Procces**', filters=filters.text, timeout=300)
         if two_step_msg.text=='/cancel':
@@ -1244,30 +1007,22 @@ async def login_handler(bot: Client, message: Message):
             await client_auth.check_password(password=password)
         except PasswordHashInvalid:
             await two_step_msg.reply('**Invalid Password Provided**')
-            await client_auth.disconnect()
-            return
+            await client_auth.disconnect(); return
             
     string_session = await client_auth.export_session_string()
     await client_auth.disconnect()
-    
-    if len(string_session) < SESSION_STRING_SIZE:
-        return await message.reply('<b>invalid session sring</b>')
+    if len(string_session) < SESSION_STRING_SIZE: return await message.reply('<b>invalid session sring</b>')
     try:
         user_data = await db.get_session(message.from_user.id)
         if user_data is None:
             uclient = Client(f"verify_{message.from_user.id}_{int(time.time())}", session_string=string_session, api_id=api_id, api_hash=api_hash, in_memory=True)
             await uclient.connect()
-            
             await db.set_session(message.from_user.id, session=string_session)
             await db.set_api_id(message.from_user.id, api_id=api_id)
             await db.set_api_hash(message.from_user.id, api_hash=api_hash)
-            
-            try:
-                await uclient.disconnect()
-            except:
-                pass
-    except Exception as e:
-        return await message.reply_text(f"<b>ERROR IN LOGIN:</b> `{e}`")
+            try: await uclient.disconnect()
+            except: pass
+    except Exception as e: return await message.reply_text(f"<b>ERROR IN LOGIN:</b> `{e}`")
     await bot.send_message(message.from_user.id, "<b>Account Login Successfully.\n\nIf You Get Any Error Related To AUTH KEY Then /logout first and /login again</b>")
 
 # ==============================================================================
@@ -1282,56 +1037,35 @@ async def broadcast_messages(user_id, message):
         await asyncio.sleep(max(0, 1.5 - elapsed)) 
         return True, "Success"
     except FloodWait as e:
-        if e.value > 60:
-            return False, "Error"
+        if e.value > 60: return False, "Error"
         await asyncio.sleep(e.value)
         return await broadcast_messages(user_id, message)
-    except InputUserDeactivated:
-        await db.delete_user(int(user_id))
-        return False, "Deleted"
-    except UserIsBlocked:
-        await db.delete_user(int(user_id))
-        return False, "Blocked"
-    except PeerIdInvalid:
-        await db.delete_user(int(user_id))
-        return False, "Error"
-    except Exception as e:
-        return False, "Error"
+    except InputUserDeactivated: await db.delete_user(int(user_id)); return False, "Deleted"
+    except UserIsBlocked: await db.delete_user(int(user_id)); return False, "Blocked"
+    except PeerIdInvalid: await db.delete_user(int(user_id)); return False, "Error"
+    except Exception as e: return False, "Error"
 
 @app.on_message(filters.command("broadcast") & filters.user(ADMINS) & filters.reply)
 async def broadcast(bot, message):
     users = await db.get_all_users()
     b_msg = message.reply_to_message
-    if not b_msg:
-        return await message.reply_text("**Reply This Command To Your Broadcast Message**")
+    if not b_msg: return await message.reply_text("**Reply This Command To Your Broadcast Message**")
     sts = await message.reply_text(text='Broadcasting your messages...')
-    start_time = time.time()
-    total_users = await db.total_users_count()
-    done = 0
-    blocked = 0
-    deleted = 0
-    failed = 0
-    success = 0
+    start_time = time.time(); total_users = await db.total_users_count()
+    done = 0; blocked = 0; deleted = 0; failed = 0; success = 0
     async for user in users:
         if 'id' in user:
             pti, sh = await broadcast_messages(int(user['id']), b_msg)
-            if pti:
-                success += 1
+            if pti: success += 1
             elif pti == False:
-                if sh == "Blocked":
-                    blocked += 1
-                elif sh == "Deleted":
-                    deleted += 1
-                elif sh == "Error":
-                    failed += 1
+                if sh == "Blocked": blocked += 1
+                elif sh == "Deleted": deleted += 1
+                elif sh == "Error": failed += 1
             done += 1
-            if not done % 20:
-                await sts.edit(f"Broadcast in progress:\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")
+            if not done % 20: await sts.edit(f"Broadcast in progress:\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")
         else:
-            done += 1
-            failed += 1
-            if not done % 20:
-                await sts.edit(f"Broadcast in progress:\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")
+            done += 1; failed += 1
+            if not done % 20: await sts.edit(f"Broadcast in progress:\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")
 
     time_taken = str(datetime.timedelta(seconds=int(time.time()-start_time)))
     await sts.edit(f"Broadcast Completed:\nCompleted in {time_taken} seconds.\n\nTotal Users {total_users}\nCompleted: {done} / {total_users}\nSuccess: {success}\nBlocked: {blocked}\nDeleted: {deleted}")
@@ -1343,10 +1077,7 @@ async def broadcast(bot, message):
 @app.on_message(filters.command(["watch"]) & filters.private)
 async def watch_setup(client: Client, message: Message):
     user_id = message.from_user.id
-    
-    if len(message.command) < 2:
-        return await message.reply("**Usage:**\n`/watch https://t.me/channel/123`\n(Supports Topics too!)")
-    
+    if len(message.command) < 2: return await message.reply("**Usage:**\n`/watch https://t.me/channel/123`\n(Supports Topics too!)")
     link_text = message.command[1]
     
     wait_msg = await message.reply("🔎 **Analyzing Source...**", quote=True)
@@ -1355,99 +1086,54 @@ async def watch_setup(client: Client, message: Message):
     source_thread_id = None
     if "t.me/c/" in link_text:
         parts = link_text.split("t.me/c/")[1].split("/")
-        if len(parts) >= 2 and parts[1].isdigit():
-            source_thread_id = int(parts[1])
+        if len(parts) >= 2 and parts[1].isdigit(): source_thread_id = int(parts[1])
     elif "t.me/" in link_text:
         parts = link_text.split("t.me/")[1].split("/")
-        if len(parts) >= 2 and parts[1].isdigit():
-            source_thread_id = int(parts[1])
+        if len(parts) >= 2 and parts[1].isdigit(): source_thread_id = int(parts[1])
     
     await wait_msg.delete()
     
-    PENDING_TASKS[user_id] = {
-        "mode": "WATCHER", 
-        "link": link_text,
-        "source_thread_id": source_thread_id,
-        "is_restricted": is_restricted,
-        "status": "waiting_choice"
-    }
-    
-    buttons = [
-        [InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")],
-        [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]
-    ]
-    
-    await message.reply(
-        f"👀 **Watcher Setup**\n\n"
-        f"{status_text}\n"
-        f"{(f'🔹 **Source Topic:** `{source_thread_id}` detected!' if source_thread_id else '')}\n\n"
-        "**Where should new messages go?**",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        quote=True
-    )
+    PENDING_TASKS[user_id] = {"mode": "WATCHER", "link": link_text, "source_thread_id": source_thread_id, "is_restricted": is_restricted, "status": "waiting_choice"}
+    buttons = [[InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")], [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")], [InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]]
+    await message.reply(f"👀 **Watcher Setup**\n\n{status_text}\n{(f'🔹 **Source Topic:** `{source_thread_id}` detected!' if source_thread_id else '')}\n\n**Where should new messages go?**", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
 
 @app.on_message(filters.command(["removetarget", "remove_target"]) & filters.private)
 async def remove_target_cmd(client, message):
-    if len(message.command) < 3:
-        return await message.reply("**Usage:** `/removetarget [source_id] [dest_id]`")
-    src = message.command[1]
-    dst = message.command[2]
-    
-    if await db.remove_watcher_target(src, dst):
-        await message.reply("✅ **Target Removed Successfully!**\nNo more messages will route here from that source.")
-    else:
-        await message.reply("⚠️ Target or Source not found.")
+    if len(message.command) < 3: return await message.reply("**Usage:** `/removetarget [source_id] [dest_id]`")
+    src = message.command[1]; dst = message.command[2]
+    if await db.remove_watcher_target(src, dst): await message.reply("✅ **Target Removed Successfully!**\nNo more messages will route here from that source.")
+    else: await message.reply("⚠️ Target or Source not found.")
 
 @app.on_message(filters.command(["removesource", "unwatch"]) & filters.private)
 async def remove_source_cmd(client, message):
-    if len(message.command) < 2:
-        return await message.reply("**Usage:** `/unwatch [source_id]`")
-    
-    try:
-        src = int(message.command[1])
-    except ValueError:
-        return await message.reply("⚠️ **Invalid format!**\nPlease pass the numerical **Source ID** (e.g. `-100123...`). You can find this ID by sending `/watchers`.")
-        
-    if await db.remove_watcher(src):
-        await message.reply("✅ **Source Route Removed Successfully!**")
-    else:
-        await message.reply("⚠️ Source not found.")
+    if len(message.command) < 2: return await message.reply("**Usage:** `/unwatch [source_id]`")
+    try: src = int(message.command[1])
+    except ValueError: return await message.reply("⚠️ **Invalid format!**\nPlease pass the numerical **Source ID** (e.g. `-100123...`). You can find this ID by sending `/watchers`.")
+    if await db.remove_watcher(src): await message.reply("✅ **Source Route Removed Successfully!**")
+    else: await message.reply("⚠️ Source not found.")
 
 @app.on_message(filters.command(["watchers", "list"]) & filters.private)
 async def list_watchers(client, message):
     user_id = message.from_user.id
-    cursor = await db.get_all_watchers()
-    watchers = await cursor.to_list(length=100)
-    
+    cursor = await db.get_all_watchers(); watchers = await cursor.to_list(length=100)
     user_watchers = [w for w in watchers if w.get('user_id') == user_id]
-    
-    if not user_watchers:
-        return await message.reply("💤 **No active watchers found.**")
+    if not user_watchers: return await message.reply("💤 **No active watchers found.**")
     
     text = "📊 **Your Multi-Source Channel Mappings:**\n\n"
-    
     for idx, w in enumerate(user_watchers, 1):
         src_id = w['source_id']
         src_display = w.get('source_title') or str(src_id)
         if w.get('source_thread'): src_display += f" (Topic: {w['source_thread']})"
-        
         targets = w.get('targets', [])
-        if not targets and 'dest_id' in w: 
-            targets = [{"dest_id": w['dest_id'], "dest_thread": w.get('dest_thread'), "dest_title": w.get('dest_title')}]
+        if not targets and 'dest_id' in w: targets = [{"dest_id": w['dest_id'], "dest_thread": w.get('dest_thread'), "dest_title": w.get('dest_title')}]
             
-        text += f"**{idx}. 📥 {src_display}**\n"
-        text += f"   <code>{src_id}</code>\n"
-        text += f"   🎛 **Filters:** `{', '.join(w.get('allowed_types', ['Legacy']))}`\n"
-        text += f"   ⤵️ **Targets ({len(targets)}):**\n"
-        
+        text += f"**{idx}. 📥 {src_display}**\n   <code>{src_id}</code>\n   🎛 **Filters:** `{', '.join(w.get('allowed_types', ['Legacy']))}`\n   ⤵️ **Targets ({len(targets)}):**\n"
         for t in targets:
             dst_id = t['dest_id']
             dst_display = t.get('dest_title') or str(dst_id)
             if t.get('dest_thread'): dst_display += f" (Topic: {t['dest_thread']})"
             text += f"   • {dst_display} (<code>{dst_id}</code>)\n"
         text += "\n"
-        
     await message.reply(text)
     
 @app.on_callback_query(filters.regex("^unwatch_"))
@@ -1455,21 +1141,15 @@ async def unwatch_callback(client, query):
     if query.data == "unwatch_all":
         user_id = query.from_user.id
         result = await db.db.watchers.delete_many({'user_id': user_id})
-        await query.message.edit(f"✅ **Success!**\n\n🗑 Removed `{result.deleted_count}` active watchers.")
-        return
+        return await query.message.edit(f"✅ **Success!**\n\n🗑 Removed `{result.deleted_count}` active watchers.")
 
     data = query.data.split("_")
-    source_id = int(data[1])
-    topic_id = int(data[2])
-    
+    source_id = int(data[1]); topic_id = int(data[2])
     query_db = {'source_id': source_id}
-    if topic_id != 0:
-        query_db['source_thread'] = topic_id
+    if topic_id != 0: query_db['source_thread'] = topic_id
         
     watcher = await db.db.watchers.find_one(query_db)
-    
-    src_name = str(source_id)
-    dest_name = "Unknown"
+    src_name = str(source_id); dest_name = "Unknown"
     
     if watcher:
         src_name = watcher.get('source_title') or str(source_id)
@@ -1481,11 +1161,7 @@ async def unwatch_callback(client, query):
     else:
         await db.db.watchers.delete_many({'source_id': source_id, 'source_thread': topic_id})
         
-    await query.message.edit(
-        f"🗑 **Active Watcher Task Removed**\n\n"
-        f"From: **{src_name}**\n"
-        f"To: **{dest_name}**"
-    )
+    await query.message.edit(f"🗑 **Active Watcher Task Removed**\n\nFrom: **{src_name}**\nTo: **{dest_name}**")
     
 # ==============================================================================
 # --- CORE: receive links / start tasks / processing / cancel checks ---
@@ -1495,133 +1171,65 @@ async def unwatch_callback(client, query):
 async def save(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id in PENDING_TASKS:
-        if PENDING_TASKS[user_id].get("status") == "waiting_id":
-            await process_custom_destination(client, message)
-            return
-        if PENDING_TASKS[user_id].get("status") == "waiting_speed":
-            await process_speed_input(client, message)
-            return
+        if PENDING_TASKS[user_id].get("status") == "waiting_id": return await process_custom_destination(client, message)
+        if PENDING_TASKS[user_id].get("status") == "waiting_speed": return await process_speed_input(client, message)
 
     link_text = message.text or message.caption
-    if not link_text or "https://t.me/" not in link_text:
-        return
+    if not link_text or "https://t.me/" not in link_text: return
 
     wait_msg = await message.reply("🔎 **Analyzing Link...**", quote=True)
     is_restricted, status_text = await check_link_restriction(user_id, link_text)
     await wait_msg.delete()
 
-    PENDING_TASKS[user_id] = {
-        "link": link_text, 
-        "status": "waiting_choice",
-        "is_restricted": is_restricted 
-    }
-    
-    buttons = [
-        [InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")],
-        [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")],
-        [InlineKeyboardButton("❌ Cancel Setup", callback_data="cancel_setup")]
-    ]
-    
-    await message.reply(
-        f"✨ **Link Detected!**\n\n"
-        f"{status_text}\n\n"
-        "Where should I send the files?",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        quote=True
-    )
+    PENDING_TASKS[user_id] = {"link": link_text, "status": "waiting_choice", "is_restricted": is_restricted}
+    buttons = [[InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")], [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")], [InlineKeyboardButton("❌ Cancel Setup", callback_data="cancel_setup")]]
+    await message.reply(f"✨ **Link Detected!**\n\n{status_text}\n\nWhere should I send the files?", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
     
 @app.on_message(filters.command(["dl"]) & (filters.private | filters.group))
 async def dl_handler(client: Client, message: Message):
     user_id = message.from_user.id
     link_text = ""
-    
     reply = message.reply_to_message
-    if reply and (reply.text or reply.caption):
-        link_text = reply.text or reply.caption
-    elif len(message.command) > 1:
-        link_text = message.text.split(None, 1)[1]
+    if reply and (reply.text or reply.caption): link_text = reply.text or reply.caption
+    elif len(message.command) > 1: link_text = message.text.split(None, 1)[1]
         
     if not link_text or "https://t.me/" not in link_text:
-        await message.reply_text(
-            "**Usage:**\n"
-            "• Reply to a link with `/dl`\n"
-            "• Or send `/dl https://t.me/...`"
-        )
-        return
+        return await message.reply_text("**Usage:**\n• Reply to a link with `/dl`\n• Or send `/dl https://t.me/...`")
 
     wait_msg = await message.reply("🔎 **Analyzing Link...**", quote=True)
     is_restricted, status_text = await check_link_restriction(user_id, link_text)
     await wait_msg.delete()
 
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-        PENDING_TASKS[user_id] = {
-            "link": link_text,
-            "dest_chat_id": message.chat.id,
-            "dest_thread_id": message.message_thread_id,
-            "dest_title": message.chat.title or "This Group",
-            "status": "waiting_speed",
-            "is_restricted": is_restricted 
-        }
+        PENDING_TASKS[user_id] = {"link": link_text, "dest_chat_id": message.chat.id, "dest_thread_id": message.message_thread_id, "dest_title": message.chat.title or "This Group", "status": "waiting_speed", "is_restricted": is_restricted}
         await message.reply(f"✨ **Link Analyzed!**\n{status_text}", quote=True)
-        await ask_for_speed(message)
-        return
+        return await ask_for_speed(message)
 
-    PENDING_TASKS[user_id] = {
-        "link": link_text, 
-        "status": "waiting_choice",
-        "is_restricted": is_restricted
-    }
-    
-    buttons = [
-        [InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")],
-        [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")],
-        [InlineKeyboardButton("❌ Cancel Setup", callback_data="cancel_setup")]  
-    ]
-    
-    await message.reply(
-        f"✨ **Link Detected!**\n\n"
-        f"{status_text}\n\n"
-        "I am ready to process this content. Please tell me where you want the files sent:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        quote=True
-    )
+    PENDING_TASKS[user_id] = {"link": link_text, "status": "waiting_choice", "is_restricted": is_restricted}
+    buttons = [[InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")], [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")], [InlineKeyboardButton("❌ Cancel Setup", callback_data="cancel_setup")]]
+    await message.reply(f"✨ **Link Detected!**\n\n{status_text}\n\nI am ready to process this content. Please tell me where you want the files sent:", reply_markup=InlineKeyboardMarkup(buttons), quote=True)
     
 @app.on_callback_query(filters.regex("^dest_"))
 async def destination_callback(client: Client, query):
     user_id = query.from_user.id
-    if user_id not in PENDING_TASKS:
-        return await query.answer("❌ Task expired. Send link again.", show_alert=True)
+    if user_id not in PENDING_TASKS: return await query.answer("❌ Task expired. Send link again.", show_alert=True)
     choice = query.data
     if choice == "dest_dm":
-        PENDING_TASKS[user_id]["dest_chat_id"] = user_id
-        PENDING_TASKS[user_id]["dest_thread_id"] = None
+        PENDING_TASKS[user_id]["dest_chat_id"] = user_id; PENDING_TASKS[user_id]["dest_thread_id"] = None
         await ask_for_speed(query.message)
     elif choice == "dest_custom":
         PENDING_TASKS[user_id]["status"] = "waiting_id"
         buttons = [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]]
-        await query.message.edit(
-            "📝 **Send the Target Chat ID**\n\n"
-            "Examples:\n"
-            "• Channel/Group: `-100123456789`\n"
-            "• Specific Topic: `-100123456789/5`\n\n"
-            "⚠️ __Make sure I am an admin in that chat!__",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        await query.message.edit("📝 **Send the Target Chat ID**\n\nExamples:\n• Channel/Group: `-100123456789`\n• Specific Topic: `-100123456789/5`\n\n⚠️ __Make sure I am an admin in that chat!__", reply_markup=InlineKeyboardMarkup(buttons))
 
 def get_filter_keyboard(current_types):
-    buttons = []
-    row = []
+    buttons = []; row = []
     for t in ALL_MSG_TYPES:
         icon = "✅" if t in current_types else "❌"
         row.append(InlineKeyboardButton(f"{icon} {t}", callback_data=f"filter_toggle:{t}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
+        if len(row) == 2: buttons.append(row); row = []
     if row: buttons.append(row)
-    buttons.append([
-        InlineKeyboardButton("✅ Select All", callback_data="filter_all"), 
-        InlineKeyboardButton("❌ Clear All", callback_data="filter_none")
-    ])
+    buttons.append([InlineKeyboardButton("✅ Select All", callback_data="filter_all"), InlineKeyboardButton("❌ Clear All", callback_data="filter_none")])
     buttons.append([InlineKeyboardButton("🚀 Proceed / Save Setup", callback_data="filter_start")])
     buttons.append([InlineKeyboardButton("🛑 Cancel Setup", callback_data="cancel_setup")])
     return InlineKeyboardMarkup(buttons)
@@ -1629,18 +1237,12 @@ def get_filter_keyboard(current_types):
 async def show_filter_menu(message_or_query, user_id):
     task_data = PENDING_TASKS.get(user_id)
     if not task_data: return
-    
-    if "allowed_types" not in task_data:
-        task_data["allowed_types"] = ["Video", "Document"] 
+    if "allowed_types" not in task_data: task_data["allowed_types"] = ["Video", "Document"] 
     task_data["status"] = "waiting_filter"
-    
     kb = get_filter_keyboard(task_data["allowed_types"])
     text = "🎛 **Content Filter**\n\nSelect the media types you want to forward or download.\n*(Default: Strictly Videos & Documents)*"
-    
-    if isinstance(message_or_query, CallbackQuery):
-        await message_or_query.message.edit_text(text, reply_markup=kb)
-    else:
-        await message_or_query.reply(text, reply_markup=kb, quote=True)
+    if isinstance(message_or_query, CallbackQuery): await message_or_query.message.edit_text(text, reply_markup=kb)
+    else: await message_or_query.reply(text, reply_markup=kb, quote=True)
 
 @app.on_callback_query(filters.regex("^filter_toggle:(.+)"))
 async def filter_toggle_cb(client, query):
@@ -1690,37 +1292,27 @@ async def filter_start_cb(client, query):
     except Exception: pass
     
     delay = task_data.get("delay", 3)
-    if task_data.get("mode") == "WATCHER":
-        await finalize_watcher_setup(client, query.message, task_data, delay, user_id=user_id)
-    else:
-        await start_task_final(client, query.message, task_data, delay, user_id=user_id)
+    if task_data.get("mode") == "WATCHER": await finalize_watcher_setup(client, query.message, task_data, delay, user_id=user_id)
+    else: await start_task_final(client, query.message, task_data, delay, user_id=user_id)
 
 async def process_custom_destination(client: Client, message: Message):
-    user_id = message.from_user.id
-    text = message.text.strip()
+    user_id = message.from_user.id; text = message.text.strip()
     try:
-        if message.reply_to_message and message.reply_to_message.from_user.is_self:
-            await message.reply_to_message.delete()
-    except:
-        pass
+        if message.reply_to_message and message.reply_to_message.from_user.is_self: await message.reply_to_message.delete()
+    except: pass
     try:
-        dest_chat_id = None
-        dest_thread_id = None
-        
+        dest_chat_id = None; dest_thread_id = None
         if "t.me/c/" in text:
             parts = text.split("t.me/c/")[1].split("/")
             dest_chat_id = int("-100" + parts[0])
-            if len(parts) > 1 and parts[1].isdigit():
-                dest_thread_id = int(parts[1])
+            if len(parts) > 1 and parts[1].isdigit(): dest_thread_id = int(parts[1])
         elif "t.me/" in text:
             parts = text.split("t.me/")[1].split("/")
             dest_chat_id = parts[0] 
-            if len(parts) > 1 and parts[1].isdigit():
-                dest_thread_id = int(parts[1])
+            if len(parts) > 1 and parts[1].isdigit(): dest_thread_id = int(parts[1])
         elif "/" in text:
             parts = text.split("/")
-            dest_chat_id = int(parts[0])
-            dest_thread_id = int(parts[1])
+            dest_chat_id = int(parts[0]); dest_thread_id = int(parts[1])
         else:
             dest_chat_id = int(text) if text.lstrip('-').isdigit() else text
             
@@ -1728,21 +1320,13 @@ async def process_custom_destination(client: Client, message: Message):
             chat = await client.get_chat(dest_chat_id)
             title = chat.title or "Target Chat"
             dest_chat_id = chat.id 
-            
-            if not getattr(chat, "is_forum", False):
-                dest_thread_id = None
-                
+            if not getattr(chat, "is_forum", False): dest_thread_id = None
         except Exception as e:
-            await message.reply(f"❌ **Invalid Chat ID/Link** or I am not an admin there.\nError: `{e}`")
-            return
+            return await message.reply(f"❌ **Invalid Chat ID/Link** or I am not an admin there.\nError: `{e}`")
             
         wait_msg = await message.reply("🔄 **Testing destination access...**", quote=True)
         success, error_msg = await test_destination_access(client, dest_chat_id, dest_thread_id)
-        
-        if not success:
-            await wait_msg.edit(f"❌ **Setup Failed! Cannot write to destination.**\n\nPlease ensure I am an admin in `{title}` with posting permissions.\n**Error:** `{error_msg}`")
-            return
-            
+        if not success: return await wait_msg.edit(f"❌ **Setup Failed! Cannot write to destination.**\n\nPlease ensure I am an admin in `{title}` with posting permissions.\n**Error:** `{error_msg}`")
         await wait_msg.delete()
             
         PENDING_TASKS[user_id]["dest_chat_id"] = dest_chat_id
@@ -1750,93 +1334,53 @@ async def process_custom_destination(client: Client, message: Message):
         PENDING_TASKS[user_id]["dest_title"] = title
         PENDING_TASKS[user_id]["status"] = "waiting_speed"
         await ask_for_speed(message)
-    except Exception as e:
-        await message.reply(f"❌ Invalid format. Please send a valid link or ID.\nError: `{e}`")
+    except Exception as e: await message.reply(f"❌ Invalid format. Please send a valid link or ID.\nError: `{e}`")
 
 async def ask_for_speed(message: Message):
-    buttons = [
-        [InlineKeyboardButton("⚡ Default (3s)", callback_data="speed_default")],
-        [InlineKeyboardButton("⚙️ Manual Speed", callback_data="speed_manual")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]
-    ]
+    buttons = [[InlineKeyboardButton("⚡ Default (3s)", callback_data="speed_default")], [InlineKeyboardButton("⚙️ Manual Speed", callback_data="speed_manual")], [InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]]
     text = "**🚀 Select Forwarding Speed**\n\nHow fast should I process messages?"
-    if isinstance(message, Message) and message.from_user.is_bot:
-        await message.edit(text, reply_markup=InlineKeyboardMarkup(buttons))
-    else:
-        await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
+    if isinstance(message, Message) and message.from_user.is_bot: await message.edit(text, reply_markup=InlineKeyboardMarkup(buttons))
+    else: await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons), quote=True)
 
 @app.on_callback_query(filters.regex("^speed_"))
 async def speed_callback(client: Client, query):
     user_id = query.from_user.id
-    if user_id not in PENDING_TASKS:
-        await query.answer("❌ Task expired.", show_alert=True)
-        return
-    
-    choice = query.data
-    task_data = PENDING_TASKS[user_id]
+    if user_id not in PENDING_TASKS: return await query.answer("❌ Task expired.", show_alert=True)
+    choice = query.data; task_data = PENDING_TASKS[user_id]
     
     if choice == "speed_manual":
         PENDING_TASKS[user_id]["status"] = "waiting_speed"
-        await query.message.edit(
-            "⏱ **Enter Delay (Seconds)**\n\n"
-            "Every time a new message arrives, I will wait this long before forwarding it.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]])
-        )
-        return
-
+        return await query.message.edit("⏱ **Enter Delay (Seconds)**\n\nEvery time a new message arrives, I will wait this long before forwarding it.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]]))
     if choice == "speed_default":
         PENDING_TASKS[user_id]["delay"] = 0 if task_data.get("mode") == "WATCHER" else 3
         await show_filter_menu(query, user_id)
 
 async def process_speed_input(client: Client, message: Message):
-    user_id = message.from_user.id
-    text = message.text.strip()
+    user_id = message.from_user.id; text = message.text.strip()
     if not text.isdigit(): return await message.reply("❌ Numbers only.")
-    
-    delay = int(text)
-    if user_id in PENDING_TASKS:
-        PENDING_TASKS[user_id]["delay"] = delay
-        await show_filter_menu(message, user_id)
+    PENDING_TASKS[user_id]["delay"] = int(text)
+    await show_filter_menu(message, user_id)
 
 async def finalize_watcher_setup(client, message, data, delay, user_id=None):
-    if user_id is None:
-        user_id = message.from_user.id if message.from_user else None
-    if not user_id:
-        return 
-    src_link = data['link']
-    source_id = None
-    source_title = "Unknown Source"
+    if user_id is None: user_id = message.from_user.id if message.from_user else None
+    if not user_id: return 
+    src_link = data['link']; source_id = None; source_title = "Unknown Source"
     
     user_session = await db.get_session(user_id)
-    api_id = await db.get_api_id(user_id)
-    api_hash = await db.get_api_hash(user_id)
+    api_id = await db.get_api_id(user_id); api_hash = await db.get_api_hash(user_id)
     
-    if not user_session:
-        return await message.reply("❌ **You are not logged in.**\n\nWatcher mode requires your account to 'listen' for new messages.\nPlease /login first.")
+    if not user_session: return await message.reply("❌ **You are not logged in.**\n\nWatcher mode requires your account to 'listen' for new messages.\nPlease /login first.")
 
     if user_id not in USER_CLIENTS:
         status_msg = await message.reply("🔄 **Starting your Listener Client...**")
         try:
-            u_api = api_id or API_ID
-            u_hash = api_hash or API_HASH
-            
-            new_client = Client(
-                f"watcher_setup_{user_id}", 
-                session_string=user_session, 
-                api_id=u_api, 
-                api_hash=u_hash, 
-                workers=4, 
-                ipv6=False,
-                in_memory=True # Memory Fix
-            )
+            u_api = api_id or API_ID; u_hash = api_hash or API_HASH
+            new_client = Client(f"watcher_setup_{user_id}", session_string=user_session, api_id=u_api, api_hash=u_hash, workers=4, ipv6=False, in_memory=True)
             new_client.add_handler(MessageHandler(user_watcher_handler))
-            
             await new_client.start()
             USER_CLIENTS[user_id] = new_client
             await status_msg.delete()
-            
-        except Exception as e:
-            return await status_msg.edit(f"❌ **Session Error:** `{e}`\n\nTry /logout and /login again.")
+        except Exception as e: return await status_msg.edit(f"❌ **Session Error:** `{e}`\n\nTry /logout and /login again.")
 
     user_client = USER_CLIENTS[user_id]
     try:
@@ -1848,88 +1392,45 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
             try:
                 chat = await user_client.get_chat(source_id)
                 source_title = chat.title or str(source_id)
-            except:
-                source_title = str(source_id)
+            except: source_title = str(source_id)
         else:
             username = src_link.replace("https://", "").replace("http://", "").replace("t.me/", "").split("/")[0]
             chat = await user_client.get_chat(username)
-            source_id = chat.id
-            source_title = chat.title or str(source_id)
+            source_id = chat.id; source_title = chat.title or str(source_id)
             join_target = username 
             
-        try: 
-            await user_client.join_chat(join_target)
-        except UserAlreadyParticipant:
-            pass 
-        except Exception as e:
-            print(f"⚠️ Auto-join warning for {join_target}: {e}")
+        try: await user_client.join_chat(join_target)
+        except UserAlreadyParticipant: pass 
+        except Exception as e: print(f"⚠️ Auto-join warning for {join_target}: {e}")
             
-        try:
-            await user_client.get_chat_member(source_id, "me")
-        except Exception:
-            return await message.reply(f"❌ **Watcher Setup Blocked!**\n\nThe account you logged in with (`/login`) is **NOT** a member of `{source_title}`. Telegram blocks live updates to non-members.\n\n**Fix:** Please manually open Telegram on the account you logged into the bot with, and join the source channel first!")
+        try: await user_client.get_chat_member(source_id, "me")
+        except Exception: return await message.reply(f"❌ **Watcher Setup Blocked!**\n\nThe account you logged in with (`/login`) is **NOT** a member of `{source_title}`. Telegram blocks live updates to non-members.\n\n**Fix:** Please manually open Telegram on the account you logged into the bot with, and join the source channel first!")
         
-    except Exception as e:
-        return await message.reply(f"❌ **Could not access Source.**\nMake sure your User Account is a member of that channel.\nError: `{e}`")
+    except Exception as e: return await message.reply(f"❌ **Could not access Source.**\nMake sure your User Account is a member of that channel.\nError: `{e}`")
 
     dest_chat_id = data.get('dest_chat_id')
-    
     if dest_chat_id and dest_chat_id != user_id: 
         success, error_msg = await test_destination_access(app, dest_chat_id, data.get('dest_thread_id'))
-        if not success:
-            return await message.reply(f"❌ **Watcher Setup Failed!**\nCannot write to the target destination.\n**Error:** `{error_msg}`")
+        if not success: return await message.reply(f"❌ **Watcher Setup Failed!**\nCannot write to the target destination.\n**Error:** `{error_msg}`")
 
-    await db.add_watcher(
-        user_id=user_id,
-        source_id=source_id,
-        dest_id=dest_chat_id,
-        source_thread=data.get('source_thread_id'),
-        dest_thread=data.get('dest_thread_id'),
-        delay=delay,
-        is_restricted=data['is_restricted'],
-        source_title=source_title,
-        dest_title=data.get('dest_title', str(data.get('dest_chat_id'))),
-        allowed_types=data.get('allowed_types')
-    )
-    
-    await message.reply(
-        f"✅ **Watcher/Routing Active!**\n\n"
-        f"👀 Source: `{source_title}`\n"
-        f"📂 Source Topic: `{data.get('source_thread_id', 'All')}`\n"
-        f"🎯 Destination: `{data.get('dest_title')}`\n"
-        f"📂 Dest Topic: `{data.get('dest_thread_id', 'None')}`\n"
-        f"⏱ Delay: `{delay}s`\n"
-        f"🔒 Restricted Mode: `{'Yes' if data['is_restricted'] else 'No'}`\n"
-        f"🎛 Filter: `{', '.join(data.get('allowed_types', []))}`"
-    )
+    await db.add_watcher(user_id=user_id, source_id=source_id, dest_id=dest_chat_id, source_thread=data.get('source_thread_id'), dest_thread=data.get('dest_thread_id'), delay=delay, is_restricted=data['is_restricted'], source_title=source_title, dest_title=data.get('dest_title', str(data.get('dest_chat_id'))), allowed_types=data.get('allowed_types'))
+    await message.reply(f"✅ **Watcher/Routing Active!**\n\n👀 Source: `{source_title}`\n📂 Source Topic: `{data.get('source_thread_id', 'All')}`\n🎯 Destination: `{data.get('dest_title')}`\n📂 Dest Topic: `{data.get('dest_thread_id', 'None')}`\n⏱ Delay: `{delay}s`\n🔒 Restricted Mode: `{'Yes' if data['is_restricted'] else 'No'}`\n🎛 Filter: `{', '.join(data.get('allowed_types', []))}`")
 
 async def send_log(text):
-    if not LOG_CHANNEL:
-        return
+    if not LOG_CHANNEL: return
     try:
-        chat_id = LOG_CHANNEL
-        topic_id = None
-        
-        if "/" in LOG_CHANNEL:
-            parts = LOG_CHANNEL.split("/")
-            chat_id = int(parts[0])
-            topic_id = int(parts[1])
-        else:
-            chat_id = int(LOG_CHANNEL)
-
+        chat_id = LOG_CHANNEL; topic_id = None
+        if "/" in LOG_CHANNEL: parts = LOG_CHANNEL.split("/"); chat_id = int(parts[0]); topic_id = int(parts[1])
+        else: chat_id = int(LOG_CHANNEL)
         await app.send_message(chat_id, text, reply_to_message_id=topic_id)
-    except Exception as e:
-        print(f"❌ Failed to send log: {e}")
+    except Exception as e: print(f"❌ Failed to send log: {e}")
 
 async def check_disk_space():
     try:
         total, used, free = shutil.disk_usage(".")
-        free_mb = free / (1024 * 1024)
-        if free_mb < 500: 
-            return False
+        if (free / (1024 * 1024)) < 500: return False
         return True
-    except:
-        return True
+    except: return True
 
 async def cleanup_watchdog():
     while True:
@@ -1937,93 +1438,44 @@ async def cleanup_watchdog():
         try:
             download_path = Path("./downloads")
             if not download_path.exists(): continue
-            
-            current_time = time.time()
-            max_age = 2 * 60 * 60 
-            
+            current_time = time.time(); max_age = 2 * 60 * 60 
             for user_folder in download_path.iterdir():
                 if user_folder.is_dir():
                     for task_folder in user_folder.iterdir():
                         if task_folder.is_dir():
-                            folder_time = task_folder.stat().st_mtime
-                            if (current_time - folder_time) > max_age:
+                            if (current_time - task_folder.stat().st_mtime) > max_age:
                                 await asyncio.to_thread(shutil.rmtree, task_folder, ignore_errors=True)
                                 await send_log(f"🧹 **Auto-Cleanup:** Deleted stuck folder `{task_folder.name}` (Older than 2h)")
-        except Exception as e:
-            print(f"Watchdog Error: {e}")
+        except Exception as e: print(f"Watchdog Error: {e}")
             
 async def start_task_final(client: Client, message_context: Message, task_data: dict, delay: int, user_id: int):
     if not await check_disk_space():
         msg = "⚠️ **Server Busy:** Disk is almost full. Please wait for other tasks to finish."
-        if isinstance(message_context, Message):
-             await message_context.reply(msg, quote=True)
-        await send_log("🚨 **Critical:** Disk Space Low (Under 500MB). Tasks rejected.")
-        return
+        if isinstance(message_context, Message): await message_context.reply(msg, quote=True)
+        return await send_log("🚨 **Critical:** Disk Space Low (Under 500MB). Tasks rejected.")
 
     if user_id not in ADMINS and batch_temp.ACTIVE_TASKS[user_id] >= MAX_CONCURRENT_TASKS_PER_USER:
-        TASK_QUEUE[user_id].append({
-            "client": client,
-            "message": message_context,
-            "data": task_data,
-            "delay": delay
-        })
+        TASK_QUEUE[user_id].append({"client": client, "message": message_context, "data": task_data, "delay": delay})
         position = len(TASK_QUEUE[user_id])
-        await message_context.reply(f"⏳ **Added to Queue:** Position #{position}\nTask will start automatically when your current tasks finish.", quote=True)
-        return
+        return await message_context.reply(f"⏳ **Added to Queue:** Position #{position}\nTask will start automatically when your current tasks finish.", quote=True)
 
     task_uuid = uuid.uuid4().hex
     dest = task_data.get("dest_title", "Direct Message")
-    
     batch_temp.ACTIVE_TASKS[user_id] += 1
-
     start_msg = f"✅ **Task Started!**\nDestination: `{dest}`\nSpeed: `{delay}s` delay\nTask ID: `{task_uuid[:8]}`"
+    
     try:
         if isinstance(message_context, Message):
-            if message_context.from_user.is_bot:
-                await message_context.edit(start_msg)
-            else:
-                await message_context.reply(start_msg)
+            if message_context.from_user.is_bot: await message_context.edit(start_msg)
+            else: await message_context.reply(start_msg)
     except: pass
-    
     await send_log(f"▶️ **Task Started**\nUser: `{user_id}`\nLink: `{task_data['link'][:40]}...`")
 
-    if user_id not in ACTIVE_PROCESSES:
-        ACTIVE_PROCESSES[user_id] = {}
-    ACTIVE_PROCESSES[user_id][task_uuid] = {
-        "user": task_data.get("dest_title", f"User({user_id})"),
-        "dest_title_name": task_data.get("dest_title", "Direct Message"), 
-        "item": task_data.get("link", "Unknown"),
-        "started": time.time(),
-        "total": 0,
-        "fetched": 0,
-        "success": 0,
-        "duplicate": 0,
-        "deleted": 0,
-        "skipped": 0,
-        "filtered": 0,
-        "failed": 0,
-        "current_status_text": "Starting Batch...",
-        "confirming_cancel": False,
-        "force_update_ui": False
-    }
-    
+    if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
+    ACTIVE_PROCESSES[user_id][task_uuid] = {"user": task_data.get("dest_title", f"User({user_id})"), "dest_title_name": task_data.get("dest_title", "Direct Message"), "item": task_data.get("link", "Unknown"), "started": time.time(), "total": 0, "fetched": 0, "success": 0, "duplicate": 0, "deleted": 0, "skipped": 0, "filtered": 0, "failed": 0, "current_status_text": "Starting Batch...", "confirming_cancel": False, "force_update_ui": False}
     is_restricted = task_data.get("is_restricted", False)
-
     targets = [{"dest_id": task_data.get("dest_chat_id"), "dest_thread": task_data.get("dest_thread_id"), "dest_title": dest}]
-    asyncio.create_task(
-        process_links_logic(
-            client,
-            message_context,
-            task_data["link"],
-            targets=targets,
-            dest_title=dest, 
-            delay=delay,
-            acc_user_id=user_id,
-            task_uuid=task_uuid,
-            is_restricted=is_restricted,
-            allowed_types=task_data.get('allowed_types')
-        )
-    )   
+    asyncio.create_task(process_links_logic(client, message_context, task_data["link"], targets=targets, dest_title=dest, delay=delay, acc_user_id=user_id, task_uuid=task_uuid, is_restricted=is_restricted, allowed_types=task_data.get('allowed_types')))   
     
 async def process_links_logic(client: Client, message: Message, text: str, targets=None, dest_title="Direct Message", delay=3, acc_user_id=None, task_uuid=None, is_restricted=False, allowed_types=None):
     user_id = acc_user_id or (message.from_user.id if message.from_user else 0)
@@ -2031,114 +1483,61 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
     
     if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
     if not task_uuid: task_uuid = uuid.uuid4().hex
-    
-    if task_uuid not in ACTIVE_PROCESSES[user_id]:
-        ACTIVE_PROCESSES[user_id][task_uuid] = {}
+    if task_uuid not in ACTIVE_PROCESSES[user_id]: ACTIVE_PROCESSES[user_id][task_uuid] = {}
         
     task_info = ACTIVE_PROCESSES[user_id][task_uuid]
-    task_info.update({
-        "user": user_mention, 
-        "dest_title_name": dest_title,
-        "item": text[:50]+"...", 
-        "started": time.time(),
-        "total": 0,
-        "fetched": 0,
-        "success": 0,
-        "duplicate": 0,
-        "deleted": 0,
-        "skipped": 0,
-        "filtered": 0,
-        "failed": 0,
-        "current_status_text": "Starting Batch...",
-        "confirming_cancel": False,
-        "force_update_ui": False
-    })
+    task_info.update({"user": user_mention, "dest_title_name": dest_title, "item": text[:50]+"...", "started": time.time(), "total": 0, "fetched": 0, "success": 0, "duplicate": 0, "deleted": 0, "skipped": 0, "filtered": 0, "failed": 0, "current_status_text": "Starting Batch...", "confirming_cancel": False, "force_update_ui": False})
 
     if "https://t.me/" in text:
-        acc = None
-        is_temp_client = False 
-        status_message = None
-        filter_thread_id = None 
-        start_time = time.time()
-        source_title = "Unknown Source"
-        total_count = 0
-        success_count = 0
-        failed_count = 0
-        was_cancelled = False
+        acc = None; is_temp_client = False; status_message = None; filter_thread_id = None 
+        start_time = time.time(); source_title = "Unknown Source"; total_count = 0; success_count = 0; failed_count = 0; was_cancelled = False
 
         try:
             clean_text = text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "")
             parts = clean_text.split("/")
-
-            if len(parts) >= 3 and parts[1].isdigit(): 
-                filter_thread_id = int(parts[1])
+            if len(parts) >= 3 and parts[1].isdigit(): filter_thread_id = int(parts[1])
 
             user_data = await db.get_session(user_id)
-            if not user_data:
-                await message.reply("**/login First.**")
-                return
+            if not user_data: return await message.reply("**/login First.**")
             
-            api_id = await db.get_api_id(user_id) or API_ID
-            api_hash = await db.get_api_hash(user_id) or API_HASH
+            api_id = await db.get_api_id(user_id) or API_ID; api_hash = await db.get_api_hash(user_id) or API_HASH
             
             is_temp_client = False
-            if user_id in USER_CLIENTS and USER_CLIENTS[user_id].is_connected:
-                acc = USER_CLIENTS[user_id]
+            if user_id in USER_CLIENTS and USER_CLIENTS[user_id].is_connected: acc = USER_CLIENTS[user_id]
             else:
-                acc = Client(
-                    f"task_{user_id}_{task_uuid}", 
-                    session_string=user_data, 
-                    api_hash=api_hash, 
-                    api_id=api_id, 
-                    no_updates=True,
-                    workers=4,
-                    sleep_threshold=60,
-                    ipv6=False,
-                    in_memory=True
-                )
+                acc = Client(f"task_{user_id}_{task_uuid}", session_string=user_data, api_hash=api_hash, api_id=api_id, no_updates=True, workers=4, sleep_threshold=60, ipv6=False, in_memory=True)
                 await acc.start()
                 is_temp_client = True
 
             try: chatid_check = int("-100" + parts[0]) if "https://t.me/c/" in text else parts[0]
             except Exception: chatid_check = parts[0]
 
-            last_segment = parts[-1].strip()
-            range_match = re.search(r"(\d+)\s*-\s*([a-zA-Z0-9]+)", text)
-            
+            last_segment = parts[-1].strip(); range_match = re.search(r"(\d+)\s*-\s*([a-zA-Z0-9]+)", text)
             if range_match:
-                fromID = int(range_match.group(1))
-                end_str = range_match.group(2).lower()
-                
+                fromID = int(range_match.group(1)); end_str = range_match.group(2).lower()
                 if end_str == "all":
                     try:
-                        async for last_msg in acc.get_chat_history(chatid_check, limit=1):
-                            toID = last_msg.id
+                        async for last_msg in acc.get_chat_history(chatid_check, limit=1): toID = last_msg.id
                     except Exception as e:
-                        print(f"Failed to fetch last message for ALL: {e}")
-                        toID = fromID
+                        print(f"Failed to fetch last message for ALL: {e}"); toID = fromID
                 else:
                     try: toID = int(end_str)
                     except: toID = fromID
-            else:
-                fromID = toID = int(last_segment)
+            else: fromID = toID = int(last_segment)
 
             if fromID == toID:
                 try:
                     media_group = await acc.get_media_group(chatid_check, fromID)
                     if media_group and len(media_group) > 1:
-                        ids = [m.id for m in media_group]
-                        fromID = min(ids)
-                        toID = max(ids)
-                except Exception:
-                    pass
+                        ids = [m.id for m in media_group]; fromID = min(ids); toID = max(ids)
+                except Exception: pass
 
             primary_dest = targets[0]['dest_id'] if targets else "unknown_dest"
             saved_msg_id = await db.get_sync_progress(user_id, chatid_check, primary_dest)
 
             skip_duplicates_amount = 0
-            
             if saved_msg_id >= toID:
-                skip_msg = (f"⏭ **DUPLICATE SKIPPED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n✅ **Status:** Files up to ID `{toID}` are already synced.")
+                skip_msg = f"⏭ **DUPLICATE SKIPPED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n✅ **Status:** Files up to ID `{toID}` are already synced."
                 try: await client.send_message(message.chat.id, skip_msg, reply_to_message_id=message.id)
                 except: pass
                 if task_uuid in ACTIVE_PROCESSES.get(user_id, {}): del ACTIVE_PROCESSES[user_id][task_uuid]
@@ -2146,90 +1545,51 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 return
                 
             elif saved_msg_id >= fromID and saved_msg_id < toID:
-                skip_duplicates_amount = (saved_msg_id - fromID) + 1
                 fromID = saved_msg_id + 1
-                resume_msg = (f"♻️ **AUTO-RESUME ACTIVATED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n▶️ **Resuming From ID:** `{fromID}`")
+                resume_msg = f"♻️ **AUTO-RESUME ACTIVATED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n▶️ **Resuming From ID:** `{fromID}`"
                 try: await client.send_message(message.chat.id, resume_msg, reply_to_message_id=message.id)
                 except: pass
 
             total_count = max(1, toID - fromID + 1)
-            
             try:
                 source_chat = await acc.get_chat(chatid_check)
                 source_title = source_chat.title or "Private Chat"
             except: pass
 
-            task_info.update({
-                "source_title": source_title, 
-                "total": total_count, 
-                "current": 0,
-                "fetched": 0,
-                "success": 0,
-                "duplicate": 0, 
-                "deleted": 0,
-                "skipped": 0,
-                "filtered": 0,
-                "failed": 0,
-                "current_status_text": "Starting Batch..."
-            })
+            task_info.update({"source_title": source_title, "total": total_count, "current": 0, "fetched": 0, "success": 0, "duplicate": 0, "deleted": 0, "skipped": 0, "filtered": 0, "failed": 0, "current_status_text": "Starting Batch..."})
 
             initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
             cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
 
             try:
-                status_message = await client.send_message(
-                    message.chat.id,
-                    initial_ui,
-                    reply_markup=cancel_btn,
-                    reply_to_message_id=message.id
-                )
-                task_info["status_msg_id"] = status_message.id
-                task_info["status_chat_id"] = status_message.chat.id
-            except Exception as e:
-                pass
+                status_message = await client.send_message(message.chat.id, initial_ui, reply_markup=cancel_btn, reply_to_message_id=message.id)
+                task_info["status_msg_id"] = status_message.id; task_info["status_chat_id"] = status_message.chat.id
+            except: pass
 
-            last_update_time = time.time()
-            inner_header = f"Filter: Topic {filter_thread_id} Only 🎯" if filter_thread_id else ""
+            last_update_time = time.time(); inner_header = f"Filter: Topic {filter_thread_id} Only 🎯" if filter_thread_id else ""
 
             for index, msgid in enumerate(range(fromID, toID+1), start=1):
                 loop_start_time = time.time()
+                if task_uuid in ACTIVE_PROCESSES.get(user_id, {}): ACTIVE_PROCESSES[user_id][task_uuid]["current"] = index
+                if CANCEL_FLAGS.get(task_uuid): was_cancelled = True; break
 
-                if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):
-                    ACTIVE_PROCESSES[user_id][task_uuid]["current"] = index
-
-                if CANCEL_FLAGS.get(task_uuid):
-                    was_cancelled = True; break
-
-                is_success = False
-                status_reason = "failed"
+                is_success = False; status_reason = "failed"
                 try:
                     chat_id = int("-100" + parts[0]) if "https://t.me/c/" in text else parts[0]
-                    
-                    is_success, status_reason = await handle_private(
-                        client, acc, message, chat_id, msgid, index, total_count, 
-                        status_message, targets, delay, 
-                        user_id, task_uuid, 
-                        is_restricted=is_restricted, 
-                        header_text=inner_header,
-                        filter_thread_id=filter_thread_id,
-                        allowed_types=allowed_types
-                    )
+                    is_success, status_reason = await handle_private(client, acc, message, chat_id, msgid, index, total_count, status_message, targets, delay, user_id, task_uuid, is_restricted=is_restricted, header_text=inner_header, filter_thread_id=filter_thread_id, allowed_types=allowed_types)
                 
                 except FloodWait as e:
                     if e.value > 300:
                         print(f"FloodWait too long ({e.value}s). Stopping task.")
                         try: await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), f"❌ **Task Cancelled automatically**\nReason: FloodWait too long ({e.value}s).")
                         except: pass
-                        was_cancelled = True
-                        break
-
+                        was_cancelled = True; break
                     wait_msg = f"⏳ **Rate Limiting Detected**\nSleeping for {e.value} seconds..."
                     try: 
                         if not is_restricted and not task_info.get("confirming_cancel"): await client.edit_message_text(task_info.get("status_chat_id"), task_info.get("status_msg_id"), wait_msg)
                     except: pass
                     await asyncio.sleep(e.value + 5)
                     continue
-                    
                 except Exception as e: 
                     print(f"Error processing {msgid}: {e}")
                     status_reason = "failed"
@@ -2238,6 +1598,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 if status_reason == "success": task_info["success"] += 1
                 elif status_reason == "deleted": task_info["deleted"] += 1
                 elif status_reason == "filtered": task_info["filtered"] += 1
+                elif status_reason == "dl_disabled": task_info["skipped"] += 1
                 elif status_reason == "skipped": task_info["skipped"] += 1
                 elif status_reason == "cancelled": was_cancelled = True; break
                 else: task_info["failed"] += 1
@@ -2247,24 +1608,18 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                         elapsed_time = time.time() - loop_start_time
                         actual_sleep = max(0, delay - elapsed_time)
                         await asyncio.sleep(actual_sleep)
-                    else:
-                        await asyncio.sleep(0.05)
+                    else: await asyncio.sleep(0.05)
                         
-                if task_info["fetched"] % 100 == 0:
-                    gc.collect()
-
-                if not was_cancelled and is_success: 
-                    await db.save_sync_progress(user_id, chatid_check, primary_dest, msgid)
+                if task_info["fetched"] % 100 == 0: gc.collect()
+                if not was_cancelled and is_success: await db.save_sync_progress(user_id, chatid_check, primary_dest, msgid)
 
                 current_now = time.time()
-                needs_refresh = task_info.get("needs_refresh", False)
-                force_update = task_info.get("force_update_ui", False)
+                needs_refresh = task_info.get("needs_refresh", False); force_update = task_info.get("force_update_ui", False)
                 
                 if not task_info.get("confirming_cancel"):
                     if (task_info["fetched"] % 5 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID or needs_refresh or force_update:
                         task_info["force_update_ui"] = False
                         percent = (task_info["fetched"] / total_count) * 100.0 if total_count > 0 else 0.0
-                        
                         eta_str = "..."
                         if task_info["fetched"] > 0:
                             elapsed = current_now - start_time
@@ -2272,47 +1627,26 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                                 eta_sec = int(((total_count - task_info["fetched"]) / (task_info["fetched"] / elapsed)))
                                 eta_str = get_readable_time(eta_sec)
                             
-                        fresh_status_ui = generate_aesthetic_progress_ui(
-                            task_info, 
-                            current_status="Forwarding", 
-                            percent=percent, 
-                            footer_status="FORWARDING"
-                        ) + f"\n\n**⏳ ETA:** {eta_str}"
+                        fresh_status_ui = generate_aesthetic_progress_ui(task_info, current_status="Forwarding", percent=percent, footer_status="FORWARDING") + f"\n\n**⏳ ETA:** {eta_str}"
                         
                         try:
                             active_chat = task_info.get("status_chat_id", message.chat.id)
                             active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
-                            
                             if needs_refresh:
                                 try: await client.delete_messages(active_chat, active_msg_id)
                                 except: pass
                                 new_msg = await client.send_message(message.chat.id, fresh_status_ui, reply_markup=cancel_btn, reply_to_message_id=message.id)
-                                task_info["status_msg_id"] = new_msg.id
-                                task_info["status_chat_id"] = new_msg.chat.id
-                                task_info["needs_refresh"] = False
-                            elif active_msg_id:
-                                await client.edit_message_text(
-                                    chat_id=active_chat,
-                                    message_id=active_msg_id,
-                                    text=fresh_status_ui,
-                                    reply_markup=cancel_btn
-                                )
+                                task_info["status_msg_id"] = new_msg.id; task_info["status_chat_id"] = new_msg.chat.id; task_info["needs_refresh"] = False
+                            elif active_msg_id: await client.edit_message_text(chat_id=active_chat, message_id=active_msg_id, text=fresh_status_ui, reply_markup=cancel_btn)
                             last_update_time = current_now
-                        except Exception: 
-                            pass
+                        except Exception: pass
                     
-        except Exception as e:
-            await send_log(f"❌ **Task Crashed**\nUser: `{user_id}`\nError: `{e}`")
-
+        except Exception as e: await send_log(f"❌ **Task Crashed**\nUser: `{user_id}`\nError: `{e}`")
         finally:
             if 'was_cancelled' in locals() and was_cancelled:
-                footer_tag = "ᴄᴀɴᴄᴇʟʟᴇᴅ"
-                status_word = "Cancelled"
-                header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
+                footer_tag = "ᴄᴀɴᴄᴇʟʟᴇᴅ"; status_word = "Cancelled"; header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
             else:
-                footer_tag = "ᴄᴏᴍᴘʟᴇᴛᴇᴅ"
-                status_word = "Completed"
-                header = f"Batch was Completed! ✅ {user_mention} ✨"
+                footer_tag = "ᴄᴏᴍᴘʟᴇᴛᴇᴅ"; status_word = "Completed"; header = f"Batch was Completed! ✅ {user_mention} ✨"
 
             try:
                 tot = task_info.get("total", 1)
@@ -2321,16 +1655,10 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 final_percent = (fet / tot * 100.0) if tot > 0 else 0.0
                 if final_percent > 100.0: final_percent = 100.0
                 
-                final_status_ui = generate_aesthetic_progress_ui(
-                    task_info,
-                    current_status=status_word,
-                    percent=final_percent,
-                    footer_status=footer_tag
-                )
+                final_status_ui = generate_aesthetic_progress_ui(task_info, current_status=status_word, percent=final_percent, footer_status=footer_tag)
                 active_chat = task_info.get("status_chat_id", message.chat.id)
                 active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
-                if active_msg_id:
-                    await client.edit_message_text(chat_id=active_chat, message_id=active_msg_id, text=final_status_ui)
+                if active_msg_id: await client.edit_message_text(chat_id=active_chat, message_id=active_msg_id, text=final_status_ui)
             except Exception: pass
 
             if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):
@@ -2338,14 +1666,12 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 except: pass
             
             CANCEL_FLAGS.pop(task_uuid, None)
-
             batch_temp.ACTIVE_TASKS[user_id] -= 1
             if batch_temp.ACTIVE_TASKS[user_id] < 0: batch_temp.ACTIVE_TASKS[user_id] = 0
             
             if TASK_QUEUE[user_id]:
                 next_item = TASK_QUEUE[user_id].pop(0)
-                try:
-                    asyncio.create_task(start_task_final(next_item["client"], next_item["message"], next_item["data"], next_item["delay"], user_id))
+                try: asyncio.create_task(start_task_final(next_item["client"], next_item["message"], next_item["data"], next_item["delay"], user_id))
                 except Exception as e:
                     print(f"❌ Queue Execution Failed for {user_id}: {e}")
                     batch_temp.ACTIVE_TASKS[user_id] -= 1 
@@ -2356,18 +1682,11 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
             duration = time.time() - start_time
             time_taken_str = get_readable_time(int(duration))
-
             final_text = (
-                f"{header}\n"
-                f"📝 **Task :** {source_title} → {dest_title}\n"
-                f"⏱ **Time Taken:** `{time_taken_str}`\n"
-                f"📊 **Statistics:**\n"
-                f"├ 📥 **Total Requested:** `{total_count}`\n"
-                f"├ ✅ **Successful:** `{task_info.get('success', 0)}`\n"
-                f"├ 👥 **Duplicates:** `{task_info.get('duplicate', 0)}`\n"
-                f"├ 🗑 **Deleted:** `{task_info.get('deleted', 0)}`\n"
-                f"├ 🪆 **Skipped:** `{task_info.get('skipped', 0)}`\n"
-                f"├ 🔁 **Filtered:** `{task_info.get('filtered', 0)}`\n"
+                f"{header}\n📝 **Task :** {source_title} → {dest_title}\n⏱ **Time Taken:** `{time_taken_str}`\n📊 **Statistics:**\n"
+                f"├ 📥 **Total Requested:** `{total_count}`\n├ ✅ **Successful:** `{task_info.get('success', 0)}`\n"
+                f"├ 👥 **Duplicates:** `{task_info.get('duplicate', 0)}`\n├ 🗑 **Deleted:** `{task_info.get('deleted', 0)}`\n"
+                f"├ 🪆 **Skipped:** `{task_info.get('skipped', 0)}`\n├ 🔁 **Filtered:** `{task_info.get('filtered', 0)}`\n"
                 f"└ ❌ **Failed:** `{task_info.get('failed', 0)}`"
             )
             try: await client.send_message(message.chat.id, final_text, reply_to_message_id=message.id)
@@ -2382,17 +1701,13 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     except Exception: return False, "failed"
 
     if not msg or msg.empty: return False, "deleted"
-    
     if filter_thread_id is not None:
-        if getattr(msg, "message_thread_id", None) != filter_thread_id:
-            return False, "filtered"
+        if getattr(msg, "message_thread_id", None) != filter_thread_id: return False, "filtered"
 
     msg_type = get_message_type(msg)
     if not msg_type: return False, "filtered"
 
-    if allowed_types is not None and msg_type not in allowed_types:
-        return False, "filtered"
-
+    if allowed_types is not None and msg_type not in allowed_types: return False, "filtered"
     if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
 
     original_filename = "unknown_file"
@@ -2402,7 +1717,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     elif msg_type == "Photo": original_filename = f"{msgid}.jpg"
     elif msg_type == "Voice": original_filename = f"{msgid}.ogg"
 
-    # 🚀 TEXT MESSAGE BOLD FIX
     if "Text" == msg_type:
         raw_text = msg.text if getattr(msg, "text", None) else ""
         perfect_text, _ = smart_rename("", raw_text)
@@ -2412,7 +1726,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             except: pass
         return True, "success"
 
-    # 🚀 CAPTION BOLD FIX
     raw_caption = msg.caption if getattr(msg, "caption", None) else ""
     perfect_caption, perfect_filename = smart_rename(original_filename, raw_caption)
     clean_caption = f"<b><i>{perfect_caption}</i></b>" if perfect_caption else ""
@@ -2420,8 +1733,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):
         forward_success = False
         for dest in targets:
-            dest_chat_id = dest['dest_id']
-            dest_thread_id = dest.get('dest_thread')
+            dest_chat_id = dest['dest_id']; dest_thread_id = dest.get('dest_thread')
             try:
                 await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
                 forward_success = True
@@ -2434,8 +1746,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     await asyncio.sleep(e.value + 2)
                     await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
                     forward_success = True
-                except Exception as e:
-                    print(f"Task Fast-Copy blocked: {e}")
+                except Exception as e: print(f"Task Fast-Copy blocked: {e}")
         if forward_success: return True, "success"
 
     # 🌟 NEW FEATURE: Check Download Status before proceeding to download heavy files
@@ -2443,7 +1754,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     if not auto_dl:
         if msg_type in ["Video", "Document"]:
             await send_log(f"🚫 **File Skipped (Auto-Download OFF)**\n📂 **Source ID:** `{chatid}`\n🆔 **Msg ID:** `{msgid}`\n📄 **Type:** `{msg_type}`")
-        return False, "skipped"
+        return False, "dl_disabled"
 
     task_folder_path = Path(f"./downloads/{user_id}/{task_uuid}/{msgid}/")
     task_folder_path.mkdir(parents=True, exist_ok=True)
@@ -2454,10 +1765,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
 
     chat_for_status = status_message.chat.id if status_message else message.chat.id
     down_task = asyncio.create_task(downstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
-    file_path = None
-    ph_path = None
-    download_success = False
-
+    file_path = None; ph_path = None; download_success = False
     split_limit = 2000 * 1024 * 1024 
 
     try: 
@@ -2471,10 +1779,8 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
 
                 if file_size > split_limit:
                     file_path = await acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[task_uuid, "down"])
-                    
                     if down_task and not down_task.done(): down_task.cancel()
                     parts = await split_file_python(file_path, chunk_size=1900*1024*1024)
-                    
                     up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
                     
                     async with USER_SEMAPHORES[user_id]:
@@ -2482,19 +1788,15 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                             for part in parts:
                                 if task_uuid and CANCEL_FLAGS.get(task_uuid): raise Exception("CANCELLED")
                                 for dest in targets:
-                                    dest_chat_id = dest['dest_id']
-                                    dest_thread_id = dest.get('dest_thread')
-                                    retry_part = 0
+                                    dest_chat_id = dest['dest_id']; dest_thread_id = dest.get('dest_thread'); retry_part = 0
                                     while retry_part < 5: 
                                         try:
                                             await client.send_document(dest_chat_id, str(part), caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
                                             break
-                                        except FloodWait as e: 
-                                            await asyncio.sleep(e.value + 5)
+                                        except FloodWait as e: await asyncio.sleep(e.value + 5)
                                         except Exception as e: 
                                             if "CANCELLED" in str(e): raise e
-                                            retry_part += 1
-                                            await asyncio.sleep(3)
+                                            retry_part += 1; await asyncio.sleep(3)
                                 try: os.remove(part)
                                 except: pass
                     
@@ -2504,12 +1806,8 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     return True, "success" 
                 else:
                     try:
-                        file_path = await asyncio.wait_for(
-                            acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[task_uuid, "down"]),
-                            timeout=1200
-                        )
-                    except asyncio.TimeoutError:
-                        return False, "failed"
+                        file_path = await asyncio.wait_for(acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[task_uuid, "down"]), timeout=1200)
+                    except asyncio.TimeoutError: return False, "failed"
                 
                 try:
                     thumb = None
@@ -2519,8 +1817,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     if thumb: ph_path = await acc.download_media(thumb.file_id, file_name=str(task_folder_path / "thumb.jpg"))
                 except: pass
 
-                download_success = True
-                break
+                download_success = True; break
             except FloodWait as e: 
                 if e.value > 300: raise e
                 await asyncio.sleep(e.value + 5)
@@ -2534,13 +1831,10 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
 
         up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
         
-        uploader = client 
-        upload_success = False
+        uploader = client; upload_success = False
         
         async def upload_to_dest(dest):
-            dest_chat_id = dest['dest_id']
-            dest_thread_id = dest.get('dest_thread')
-            success_local = False
+            dest_chat_id = dest['dest_id']; dest_thread_id = dest.get('dest_thread'); success_local = False
             async with SERVER_UPLOAD_LIMIT:
                 async with USER_SEMAPHORES[user_id]:
                     retry_count = 0
@@ -2554,20 +1848,16 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                             elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
                             elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
                             elif "Sticker" == msg_type: await uploader.send_sticker(dest_chat_id, file_path, reply_to_message_id=dest_thread_id)
-                            success_local = True
-                            break 
-                        except FloodWait as e:
-                            await asyncio.sleep(e.value + 5)
+                            success_local = True; break 
+                        except FloodWait as e: await asyncio.sleep(e.value + 5)
                         except Exception as e:
                             if "CANCELLED" in str(e): break
-                            retry_count += 1
-                            await asyncio.sleep(3)
+                            retry_count += 1; await asyncio.sleep(3)
             return success_local
 
         for dest in targets:
             if task_uuid and CANCEL_FLAGS.get(task_uuid): break
-            if await upload_to_dest(dest):
-                upload_success = True
+            if await upload_to_dest(dest): upload_success = True
         
         if up_task and not up_task.done(): up_task.cancel()
         return (True, "success") if upload_success else (False, "failed")
@@ -2585,13 +1875,9 @@ async def _koyeb_health_handler(request):
     return web.Response(text="OK", status=200)
 
 async def start_koyeb_health_check(host: str = "0.0.0.0", port: int | str = 8080):
-    if web is None:
-        print("aiohttp not installed; Koyeb health check not started.")
-        return
-    try:
-        port = int(os.environ.get("PORT", str(port)))
-    except Exception:
-        port = 8080
+    if web is None: return
+    try: port = int(os.environ.get("PORT", str(port)))
+    except Exception: port = 8080
     app_web = web.Application()
     app_web.router.add_get("/", _koyeb_health_handler)
     app_web.router.add_get("/health", _koyeb_health_handler)
@@ -2602,7 +1888,6 @@ async def start_koyeb_health_check(host: str = "0.0.0.0", port: int | str = 8080
     print(f"Starting Koyeb health check server on port {port}...")
 
 from pyrogram.handlers import MessageHandler
-
 WATCHER_LOCKS = {} 
 
 async def process_watcher_message(client, message):
@@ -2610,39 +1895,25 @@ async def process_watcher_message(client, message):
     topic_id = getattr(message, "message_thread_id", None)
     
     watcher = await db.get_watcher(chat_id, topic_id)
-    if not watcher:
-        watcher = await db.get_watcher(chat_id, None)
-        
-    if not watcher: 
-        return
+    if not watcher: watcher = await db.get_watcher(chat_id, None)
+    if not watcher: return
 
     targets = watcher.get('targets', [])
-    if not targets and 'dest_id' in watcher:
-        targets = [{"dest_id": watcher['dest_id'], "dest_thread": watcher.get('dest_thread'), "dest_title": watcher.get('dest_title')}]
-        
-    if not targets: 
-        return
+    if not targets and 'dest_id' in watcher: targets = [{"dest_id": watcher['dest_id'], "dest_thread": watcher.get('dest_thread'), "dest_title": watcher.get('dest_title')}]
+    if not targets: return
 
     allowed_types = watcher.get('allowed_types', ["Video", "Document"])
     msg_type = get_message_type(message)
-    
-    if msg_type not in allowed_types: 
-        return
+    if msg_type not in allowed_types: return
 
-    delay = watcher.get('delay', 0)
-    owner_id = watcher['user_id']
-    is_restricted = watcher.get('is_restricted', False)
-
+    delay = watcher.get('delay', 0); owner_id = watcher['user_id']; is_restricted = watcher.get('is_restricted', False)
     lock_key = f"watcher_{chat_id}_{owner_id}"
-    if lock_key not in WATCHER_LOCKS:
-        WATCHER_LOCKS[lock_key] = asyncio.Lock()
+    if lock_key not in WATCHER_LOCKS: WATCHER_LOCKS[lock_key] = asyncio.Lock()
 
     async with WATCHER_LOCKS[lock_key]:
-        if delay > 0:
-            await asyncio.sleep(delay)
+        if delay > 0: await asyncio.sleep(delay)
 
         is_content_protected = getattr(message, "has_protected_content", False) or getattr(message.chat, "has_protected_content", False)
-        
         fallback_to_download = True 
 
         if not is_restricted and not is_content_protected:
@@ -2668,22 +1939,17 @@ async def process_watcher_message(client, message):
 
             for t in targets:
                 success = False
-                dest_id = t['dest_id']
-                dest_thread = t.get('dest_thread')
-                
+                dest_id = t['dest_id']; dest_thread = t.get('dest_thread')
                 try: 
                     await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
                     success = True
-                except Exception as e1: 
-                    try:
-                        await client.get_chat(dest_id)
-                    except Exception:
-                        pass
-
+                except Exception: 
+                    try: await client.get_chat(dest_id)
+                    except Exception: pass
                     try: 
                         await client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
                         success = True
-                    except Exception as e2:
+                    except Exception:
                         try:
                             await client.forward_messages(chat_id=dest_id, from_chat_id=chat_id, message_ids=message.id, message_thread_id=dest_thread)
                             success = True
@@ -2693,25 +1959,21 @@ async def process_watcher_message(client, message):
                                     log_chat = int(LOG_CHANNEL.split("/")[0]) if "/" in LOG_CHANNEL else int(LOG_CHANNEL)
                                     await app.send_message(log_chat, f"❌ **Fast-Copy Failed!**\nSource: `{chat_id}`\nDest: `{dest_id}`\nError: `{e3}`")
                                 except: pass
-                
-                if not success:
-                    fallback_to_download = True
+                if not success: fallback_to_download = True
 
-        if not fallback_to_download:
-            return 
+        if not fallback_to_download: return 
                 
         owner_client = USER_CLIENTS.get(owner_id)
-        if not owner_client: 
-            return 
+        if not owner_client: return 
 
         try:
+            # 🌟 NEW WATCHER NOTIFICATION UI & DOWNLOAD TOGGLE
             source_name = message.chat.title or str(chat_id)
             dest_name = targets[0].get('dest_title', str(targets[0]['dest_id'])) if targets else "Unknown Target"
             
-            # 🌟 NEW FEATURE: Check Download Status for Watchers
             auto_dl = await db.get_dl_status()
             if not auto_dl:
-                alert_text = f"🚫 **Watcher Skipped (Download OFF)**\n📂 **Source:** `{source_name}`\n🎯 **Dest:** `{dest_name}`\n🆔 **Msg ID:** `{message.id}`\n*(Fast-copy failed, downloading disabled to save bandwidth!)*"
+                alert_text = f"🚫 **Watcher Skipped (Download OFF)**\n📂 **Source:** `{source_name}`\n🎯 **Dest:** `{dest_name}`\n🆔 **Msg ID:** `{message.id}`\n*(Fast-copy failed, but downloading is disabled to save bandwidth!)*"
                 try: await app.send_message(owner_id, alert_text)
                 except: pass
                 if msg_type in ["Video", "Document"]:
@@ -2726,44 +1988,20 @@ async def process_watcher_message(client, message):
                     log_chat_id = int(LOG_CHANNEL.split("/")[0]) if "/" in LOG_CHANNEL else int(LOG_CHANNEL)
                     log_topic_id = int(LOG_CHANNEL.split("/")[1]) if "/" in LOG_CHANNEL else None
                     await app.send_message(log_chat_id, notify_text, reply_to_message_id=log_topic_id)
-                except Exception:
-                    pass
+                except Exception: pass
 
             task_uuid = uuid.uuid4().hex
-            if owner_id not in ACTIVE_PROCESSES: 
-                ACTIVE_PROCESSES[owner_id] = {}
-            ACTIVE_PROCESSES[owner_id][task_uuid] = {
-                "user": f"Watcher({owner_id})",
-                "dest_title_name": dest_name,
-                "item": f"Live Download: ID {message.id}",
-                "started": time.time()
-            }
+            if owner_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[owner_id] = {}
+            ACTIVE_PROCESSES[owner_id][task_uuid] = {"user": f"Watcher({owner_id})", "dest_title_name": dest_name, "item": f"Live Download: ID {message.id}", "started": time.time()}
 
             try:
-                await handle_private(
-                    client=app,
-                    acc=owner_client,
-                    message=message, 
-                    chatid=chat_id, 
-                    msgid=message.id, 
-                    index=1, 
-                    total_count=1, 
-                    status_message=dummy_status, 
-                    targets=targets,
-                    delay=0, 
-                    user_id=owner_id, 
-                    task_uuid=task_uuid,
-                    is_restricted=True,
-                    allowed_types=allowed_types
-                )
+                await handle_private(client=app, acc=owner_client, message=message, chatid=chat_id, msgid=message.id, index=1, total_count=1, status_message=dummy_status, targets=targets, delay=0, user_id=owner_id, task_uuid=task_uuid, is_restricted=True, allowed_types=allowed_types)
             finally:
-                if task_uuid in ACTIVE_PROCESSES.get(owner_id, {}):
-                    del ACTIVE_PROCESSES[owner_id][task_uuid]
+                if task_uuid in ACTIVE_PROCESSES.get(owner_id, {}): del ACTIVE_PROCESSES[owner_id][task_uuid]
                 CANCEL_FLAGS.pop(task_uuid, None)
                 
             await dummy_status.delete()
-        except Exception as e:
-            print(f"❌ [DEBUG WATCHER] Watcher Mode B Fail: {e}")
+        except Exception as e: print(f"❌ [DEBUG WATCHER] Watcher Mode B Fail: {e}")
             
 async def user_watcher_handler(client, message):
     await process_watcher_message(client, message)
@@ -2771,21 +2009,14 @@ async def user_watcher_handler(client, message):
 async def cleanup_startup():
     folder = Path("./downloads")
     if folder.exists():
-        try:
-            shutil.rmtree(folder)
-            print("🧹 Startup: Cleared temporary downloads folder.")
-        except Exception as e:
-            print(f"⚠️ Could not clean downloads folder: {e}")
+        try: shutil.rmtree(folder); print("🧹 Startup: Cleared temporary downloads folder.")
+        except Exception as e: print(f"⚠️ Could not clean downloads folder: {e}")
     folder.mkdir(parents=True, exist_ok=True)
 
 async def main():
     global USER_CLIENTS
-    
-    await cleanup_startup()
-    asyncio.create_task(cleanup_watchdog())
-
-    await app.start()
-    print("🤖 Bot Started")
+    await cleanup_startup(); asyncio.create_task(cleanup_watchdog())
+    await app.start(); print("🤖 Bot Started")
     
     try:
         public_commands = [
@@ -2811,67 +2042,36 @@ async def main():
         ]
 
         await app.set_bot_commands(public_commands, scope=BotCommandScopeDefault())
-
         all_admins = set(ADMINS + SUDOS)
-        
         for admin_id in all_admins:
-            try:
-                await app.set_bot_commands(
-                    admin_commands, 
-                    scope=BotCommandScopeChat(chat_id=admin_id)
-                )
-            except Exception as e:
-                pass
-                
-    except Exception as e:
-        pass
+            try: await app.set_bot_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+            except Exception: pass
+    except Exception: pass
     
     active_watcher_users = set()
     cursor = await db.get_all_watchers()
-    async for w in cursor:
-        active_watcher_users.add(w['user_id'])
+    async for w in cursor: active_watcher_users.add(w['user_id'])
 
     for user_id in active_watcher_users:
         user_session = await db.get_session(user_id)
-        if not user_session:
-            continue
-            
+        if not user_session: continue
         try:
             if user_id in USER_CLIENTS: continue
-
-            u_api = await db.get_api_id(user_id) or API_ID
-            u_hash = await db.get_api_hash(user_id) or API_HASH
-            
-            user_client = Client(
-                f"watcher_main_{user_id}", 
-                session_string=user_session, 
-                api_id=u_api, 
-                api_hash=u_hash, 
-                workers=4, 
-                ipv6=False,
-                in_memory=True
-            )
-            
+            u_api = await db.get_api_id(user_id) or API_ID; u_hash = await db.get_api_hash(user_id) or API_HASH
+            user_client = Client(f"watcher_main_{user_id}", session_string=user_session, api_id=u_api, api_hash=u_hash, workers=4, ipv6=False, in_memory=True)
             user_client.add_handler(MessageHandler(user_watcher_handler))
             await user_client.start()
             USER_CLIENTS[user_id] = user_client
             
             async for w in db.db.watchers.find({'user_id': user_id}):
-                target_source = w['source_id']
-                try: 
-                    await user_client.get_chat_member(target_source, "me")
-                except Exception as e: 
-                    pass
-
+                try: await user_client.get_chat_member(w['source_id'], "me")
+                except Exception: pass
             async for w in db.db.watchers.find({'user_id': user_id}):
                 try: 
                     await user_client.get_chat(w['source_id'])
                     async for _ in user_client.get_chat_history(w['source_id'], limit=1): break
-                except Exception as e: 
-                    pass
-            
-        except Exception as e:
-            pass
+                except Exception: pass
+        except Exception: pass
 
     asyncio.create_task(start_koyeb_health_check())
     await idle()

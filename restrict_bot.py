@@ -110,6 +110,7 @@ HELP_TXT = """<b>📚 BOT'S USAGE GUIDE</b>
 • <code>/removetarget</code> - Remove a specific destination.
 • <code>/removesource</code> (or <code>/unwatch</code>) - Stop watching a source.
 • <code>/tasks</code> - Delete old progress and reload live progress pop-up.
+• <code>/toggledl</code> - Turn ON/OFF Background Downloading.
 • <code>/cancel</code> - Cancel ongoing tasks.
 </blockquote>
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬"""
@@ -123,6 +124,16 @@ class Database:
         self._client = motor.motor_asyncio.AsyncIOMotorClient(uri)
         self.db = self._client[database_name]
         self.col = self.db.users
+
+    async def get_dl_status(self):
+        setting = await self.db.settings.find_one({'id': 'system'})
+        if setting: return setting.get('auto_download', True)
+        return True
+
+    async def toggle_dl_status(self):
+        current = await self.get_dl_status()
+        await self.db.settings.update_one({'id': 'system'}, {'$set': {'auto_download': not current}}, upsert=True)
+        return not current
 
     def new_user(self, id, name):
         return dict(
@@ -184,7 +195,6 @@ class Database:
         count = await self.col.count_documents({"session": {"$ne": None}})
         return count
 
-    # --- SMART RESUME PROGRESS METHODS ---
     async def save_sync_progress(self, user_id, source_id, dest_id, msg_id):
         query = {"user_id": int(user_id), "source_id": str(source_id), "dest_id": str(dest_id)}
         await self.db.sync_progress.update_one(
@@ -197,7 +207,6 @@ class Database:
         data = await self.db.sync_progress.find_one({"user_id": int(user_id), "source_id": str(source_id), "dest_id": str(dest_id)})
         return data.get("last_msg_id", 0) if data else 0
 
-    # --- WATCHER METHODS ---
     async def add_watcher(self, user_id, source_id, dest_id, source_thread=None, dest_thread=None, delay=0, is_restricted=False, source_title=None, dest_title=None, allowed_types=None):
         if allowed_types is None:
             allowed_types = ["Video", "Document"] 
@@ -458,26 +467,23 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX 2: PERFECT JUNK REMOVAL LOGIC (Hyphens Supported!)
+# 🚀 BUG FIX 3: STRICT LEADING JUNK REMOVAL LOGIC
 def smart_rename(filename, caption_text=""):
     fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     cap_str = str(caption_text or "").strip()
     
-    def clean_leading_junk(text):
-        while True:
-            old_text = text
-            # Matches ONLY at the start: ignores any emojis/symbols before [bracket] or @username
-            text = re.sub(r'^[^a-zA-Z0-9]*\[.*?\][^a-zA-Z0-9]*', '', text)
-            text = re.sub(r'^[^a-zA-Z0-9]*@[a-zA-Z0-9_]+[^a-zA-Z0-9]*', '', text)
-            if old_text == text:
-                break
-        return text.strip(' -_:|')
+    def clean_start(text):
+        # Removes ONLY the very first bracket [...] or @username along with surrounding hyphens/spaces
+        res = re.sub(r'^[^a-zA-Z0-9]*(\[.*?\]|@[a-zA-Z0-9_]+)[^a-zA-Z0-9]*', '', text)
+        # We run it one more time just in case it starts with [@Username] - [HD_Tag]
+        res = re.sub(r'^[^a-zA-Z0-9]*(\[.*?\]|@[a-zA-Z0-9_]+)[^a-zA-Z0-9]*', '', res)
+        return res.strip(' -_:|')
         
-    perfect_filename = clean_leading_junk(fname_str)
-    if not perfect_filename:
+    perfect_filename = clean_start(fname_str)
+    if len(perfect_filename) < 3:
         perfect_filename = fname_str
         
-    perfect_caption = clean_leading_junk(cap_str)
+    perfect_caption = clean_start(cap_str)
     
     return perfect_caption, perfect_filename
 
@@ -822,6 +828,15 @@ async def send_help(client: Client, message: Message):
         disable_web_page_preview=True
     )
 
+# 🌟 NEW COMMAND: TOGGLE DOWNLOAD STATUS
+@app.on_message(filters.command(["toggledl"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
+async def toggle_dl_command(client: Client, message: Message):
+    new_status = await db.toggle_dl_status()
+    if new_status:
+        await message.reply("✅ **Auto-Download is now ON.**\nBot will download files if direct fast-copy fails.")
+    else:
+        await message.reply("🚫 **Auto-Download is now OFF.**\nBot will ONLY direct-forward. If forwarding fails (restricted or floodwait), it will simply SKIP the file to save bandwidth.")
+
 @app.on_message(filters.command(["tasks", "progress"]) & filters.private)
 async def task_refresh_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -1007,12 +1022,15 @@ async def status_style_handler(client, message):
     
     watcher_count = await db.db.watchers.count_documents({})
     queue_text = "\n".join(queue_list) if queue_list else "😴 No active downloads."
+    
+    auto_dl = "ON ✅" if await db.get_dl_status() else "OFF ❌"
 
     msg = (
         f"🔰 **SYSTEM DASHBOARD**\n\n"
         f"⏱ **Uptime:** `{uptime_str}`\n"
         f"🧠 **RAM:** `{mem}%`  │  ⚙️ **CPU:** `{cpu}%` \n"
-        f"💿 **Disk Free:** `{disk_free:.1f} GB` \n\n"
+        f"💿 **Disk Free:** `{disk_free:.1f} GB` \n"
+        f"🔄 **Auto-Download:** `{auto_dl}` \n\n"
         f"👀 **Live Watchers:** `{watcher_count}` running\n"
         f"📉 **Active Downloads ({active_count})**\n"
         f"{queue_text}"
@@ -1473,7 +1491,7 @@ async def unwatch_callback(client, query):
 # --- CORE: receive links / start tasks / processing / cancel checks ---
 # ==============================================================================
 
-@app.on_message((filters.text | filters.caption) & filters.private & ~filters.command(["dl", "start", "help", "cancel", "botstats", "login", "logout", "broadcast", "status", "watch", "unwatch", "watchers", "removetarget", "removesource", "log", "tasks", "progress"]))
+@app.on_message((filters.text | filters.caption) & filters.private & ~filters.command(["dl", "start", "help", "cancel", "botstats", "login", "logout", "broadcast", "status", "watch", "unwatch", "watchers", "removetarget", "removesource", "log", "tasks", "progress", "toggledl"]))
 async def save(client: Client, message: Message):
     user_id = message.from_user.id
     if user_id in PENDING_TASKS:
@@ -2117,7 +2135,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
             primary_dest = targets[0]['dest_id'] if targets else "unknown_dest"
             saved_msg_id = await db.get_sync_progress(user_id, chatid_check, primary_dest)
 
-            # 🚀 FIX: RESUME LOGIC (No Duplicate count, Total Msg equals only remaining files)
+            skip_duplicates_amount = 0
+            
             if saved_msg_id >= toID:
                 skip_msg = (f"⏭ **DUPLICATE SKIPPED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n✅ **Status:** Files up to ID `{toID}` are already synced.")
                 try: await client.send_message(message.chat.id, skip_msg, reply_to_message_id=message.id)
@@ -2127,12 +2146,12 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 return
                 
             elif saved_msg_id >= fromID and saved_msg_id < toID:
+                skip_duplicates_amount = (saved_msg_id - fromID) + 1
                 fromID = saved_msg_id + 1
                 resume_msg = (f"♻️ **AUTO-RESUME ACTIVATED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n▶️ **Resuming From ID:** `{fromID}`")
                 try: await client.send_message(message.chat.id, resume_msg, reply_to_message_id=message.id)
                 except: pass
 
-            # Total is now strictly what is LEFT to download
             total_count = max(1, toID - fromID + 1)
             
             try:
@@ -2154,7 +2173,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current_status_text": "Starting Batch..."
             })
 
-            # 🚀 0-SEC UI FIX WITH NEW CANCEL CONFIRMATION BUTTON
             initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
             cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
 
@@ -2388,19 +2406,15 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     if "Text" == msg_type:
         raw_text = msg.text if getattr(msg, "text", None) else ""
         perfect_text, _ = smart_rename("", raw_text)
-        # 🌟 NEW FEATURE: BOLD AND ITALIC TEXT MESSAGE
         clean_text = f"<b><i>{perfect_text}</i></b>" if perfect_text else ""
         for dest in targets:
             try: await client.send_message(dest['dest_id'], clean_text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=dest.get('dest_thread'))
             except: pass
         return True, "success"
 
-    # 🚀 ORIGINAL NAME & CAPTION SAFELY CLEANED (Only leading tags removed)
-    # BUG FIX: Plain text fetch karke function me bheja taaki HTML tags regex break na kare!
+    # 🚀 CAPTION BOLD FIX
     raw_caption = msg.caption if getattr(msg, "caption", None) else ""
     perfect_caption, perfect_filename = smart_rename(original_filename, raw_caption)
-    
-    # 🌟 NEW FEATURE: BOLD AND ITALIC CAPTION
     clean_caption = f"<b><i>{perfect_caption}</i></b>" if perfect_caption else ""
 
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):
@@ -2424,6 +2438,13 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     print(f"Task Fast-Copy blocked: {e}")
         if forward_success: return True, "success"
 
+    # 🌟 NEW FEATURE: Check Download Status before proceeding to download heavy files
+    auto_dl = await db.get_dl_status()
+    if not auto_dl:
+        if msg_type in ["Video", "Document"]:
+            await send_log(f"🚫 **File Skipped (Auto-Download OFF)**\n📂 **Source ID:** `{chatid}`\n🆔 **Msg ID:** `{msgid}`\n📄 **Type:** `{msg_type}`")
+        return False, "skipped"
+
     task_folder_path = Path(f"./downloads/{user_id}/{task_uuid}/{msgid}/")
     task_folder_path.mkdir(parents=True, exist_ok=True)
 
@@ -2431,10 +2452,8 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     if not safe_filename.strip(): safe_filename = f"{msgid}.dat"
     file_path_to_save = task_folder_path / safe_filename
 
-    t_info = ACTIVE_PROCESSES.get(user_id, {}).get(task_uuid, {})
-    current_status_chat = t_info.get("status_chat_id", status_message.chat.id if status_message else message.chat.id)
-
-    down_task = asyncio.create_task(downstatus(client, status_message, current_status_chat, index, total_count, header_text, task_uuid, user_id))
+    chat_for_status = status_message.chat.id if status_message else message.chat.id
+    down_task = asyncio.create_task(downstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
     file_path = None
     ph_path = None
     download_success = False
@@ -2456,7 +2475,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     if down_task and not down_task.done(): down_task.cancel()
                     parts = await split_file_python(file_path, chunk_size=1900*1024*1024)
                     
-                    up_task = asyncio.create_task(upstatus(client, status_message, current_status_chat, index, total_count, header_text, task_uuid, user_id))
+                    up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
                     
                     async with USER_SEMAPHORES[user_id]:
                         async with SERVER_UPLOAD_LIMIT:
@@ -2513,7 +2532,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
         if not download_success: return False, "failed"
         if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
 
-        up_task = asyncio.create_task(upstatus(client, status_message, current_status_chat, index, total_count, header_text, task_uuid, user_id))
+        up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
         
         uploader = client 
         upload_success = False
@@ -2633,7 +2652,6 @@ async def process_watcher_message(client, message):
             if msg_type == "Text":
                 raw_text = message.text if getattr(message, "text", None) else ""
                 perfect_text, _ = smart_rename("", raw_text)
-                # 🌟 NEW FEATURE: BOLD AND ITALIC TEXT FOR WATCHER
                 clean_text = f"<b><i>{perfect_text}</i></b>" if perfect_text else ""
                 for t in targets:
                     try: await app.send_message(t['dest_id'], clean_text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=t.get('dest_thread'))
@@ -2646,8 +2664,6 @@ async def process_watcher_message(client, message):
             
             raw_caption = message.caption if getattr(message, "caption", None) else ""
             perfect_caption, _ = smart_rename(original_filename, raw_caption)
-            
-            # 🌟 NEW FEATURE: BOLD AND ITALIC CAPTION FOR WATCHER
             clean_caption = f"<b><i>{perfect_caption}</i></b>" if perfect_caption else ""
 
             for t in targets:
@@ -2689,18 +2705,27 @@ async def process_watcher_message(client, message):
             return 
 
         try:
-            dummy_status = await app.send_message(owner_id, f"⬇️ **Watcher:** Processing ID `{message.id}` (Download Mode)...")
+            source_name = message.chat.title or str(chat_id)
+            dest_name = targets[0].get('dest_title', str(targets[0]['dest_id'])) if targets else "Unknown Target"
+            
+            # 🌟 NEW FEATURE: Check Download Status for Watchers
+            auto_dl = await db.get_dl_status()
+            if not auto_dl:
+                alert_text = f"🚫 **Watcher Skipped (Download OFF)**\n📂 **Source:** `{source_name}`\n🎯 **Dest:** `{dest_name}`\n🆔 **Msg ID:** `{message.id}`\n*(Fast-copy failed, downloading disabled to save bandwidth!)*"
+                try: await app.send_message(owner_id, alert_text)
+                except: pass
+                if msg_type in ["Video", "Document"]:
+                    await send_log(alert_text)
+                return
+
+            notify_text = f"⬇️ **Watcher Alert (Download Mode)**\n📂 **Source:** `{source_name}`\n🎯 **Dest:** `{dest_name}`\n🆔 **Msg ID:** `{message.id}`\n*(Fast-copy failed, starting manual download...)*"
+            dummy_status = await app.send_message(owner_id, notify_text)
             
             if LOG_CHANNEL:
                 try:
-                    if "/" in LOG_CHANNEL:
-                        _parts = LOG_CHANNEL.split("/")
-                        log_chat_id = int(_parts[0])
-                        log_topic_id = int(_parts[1])
-                    else:
-                        log_chat_id = int(LOG_CHANNEL)
-                        log_topic_id = None
-                    await app.send_message(log_chat_id, f"⬇️ **Watcher:** Processing ID `{message.id}`...", reply_to_message_id=log_topic_id)
+                    log_chat_id = int(LOG_CHANNEL.split("/")[0]) if "/" in LOG_CHANNEL else int(LOG_CHANNEL)
+                    log_topic_id = int(LOG_CHANNEL.split("/")[1]) if "/" in LOG_CHANNEL else None
+                    await app.send_message(log_chat_id, notify_text, reply_to_message_id=log_topic_id)
                 except Exception:
                     pass
 
@@ -2709,7 +2734,7 @@ async def process_watcher_message(client, message):
                 ACTIVE_PROCESSES[owner_id] = {}
             ACTIVE_PROCESSES[owner_id][task_uuid] = {
                 "user": f"Watcher({owner_id})",
-                "dest_title_name": "Watcher Targets",
+                "dest_title_name": dest_name,
                 "item": f"Live Download: ID {message.id}",
                 "started": time.time()
             }
@@ -2773,6 +2798,7 @@ async def main():
             BotCommand("unwatch", "🗑 Stop watching a source"),
             BotCommand("watchers", "📋 List your active watchers"),
             BotCommand("tasks", "📊 View live task progress"),
+            BotCommand("toggledl", "🔛 Turn Auto-Download ON/OFF"),
             BotCommand("cancel", "❌ Cancel Your Any Ongoing Task")
         ]
 

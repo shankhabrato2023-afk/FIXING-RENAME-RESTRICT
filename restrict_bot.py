@@ -467,7 +467,7 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX 4: SMART QUALITY TAGGER (Adds 720p if missing)
+# 🚀 BUG FIX: SMART QUALITY TAGGER + UNDERSCORE REMOVER
 def smart_rename(filename, caption_text=""):
     fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     cap_str = str(caption_text or "").strip()
@@ -489,8 +489,6 @@ def smart_rename(filename, caption_text=""):
     if len(perfect_name) < 3: 
         perfect_name = name.replace('_', ' ')
 
-    # --- NEW LOGIC: SMART QUALITY ADDER ---
-    # Agar quality (2160p, 1080p, 720p, etc) nahi milti hai toh 720p add karega
     quality_pattern = re.compile(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', re.IGNORECASE)
     if not quality_pattern.search(perfect_name):
         perfect_name = perfect_name + " 720p"
@@ -500,7 +498,6 @@ def smart_rename(filename, caption_text=""):
     perfect_caption = clean_text(cap_str)
     if perfect_caption and not quality_pattern.search(perfect_caption):
         perfect_caption = perfect_caption + " 720p"
-    # --------------------------------------
 
     return perfect_caption, perfect_filename
 
@@ -543,7 +540,6 @@ async def check_link_restriction(user_id, link_text):
         
         api_id = await db.get_api_id(user_id)
         api_hash = await db.get_api_hash(user_id)
-        # Session Memory Flag Enabled
         check_client = Client(f"check_{user_id}_{int(time.time())}", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False, in_memory=True)
         is_temp_client = True
 
@@ -636,21 +632,13 @@ def _split_file_smart(file_path, chunk_size):
             parts.append(part_name)
             part_num += 1
     return parts
-    
-def progress(current, total, message, typ, task_uuid=None):
+
+# 🚀 BUG FIX: PROGRESS FUNCTION FIXED FOR UI UPDATES
+def progress(current, total, task_uuid, typ):
     if task_uuid and CANCEL_FLAGS.get(task_uuid):
         raise Exception("CANCELLED_BY_USER")
-
-    try:
-        if task_uuid:
-            key = f"{task_uuid}:{typ}"
-        else:
-            msg_id = int(message.id)
-            chat_id = int(message.chat.id)
-            key = f"{chat_id}:{msg_id}:{typ}"
-    except:
-        return
-        
+    
+    key = f"{task_uuid}:{typ}"
     now = time.time()
     if key not in PROGRESS:
         PROGRESS[key] = {
@@ -676,7 +664,7 @@ def progress(current, total, message, typ, task_uuid=None):
 async def downstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = "", task_uuid: str = None, user_id: int = None):
     original_msg_id = status_message.id if status_message else 0
     original_chat_id = chat
-    key = f"{task_uuid}:down" if task_uuid else f"{original_chat_id}:{original_msg_id}:down"
+    key = f"{task_uuid}:down" 
     last_text = ""
     while True:
         current_msg_id = original_msg_id
@@ -701,9 +689,8 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"📥 Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
+        current_action = f"📥 Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "DOWNLOADING")
-        status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
         if not task_info.get("confirming_cancel"):
             if status_text != last_text or task_info.get("force_update_ui"):
@@ -724,7 +711,7 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
 async def upstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = "", task_uuid: str = None, user_id: int = None):
     original_msg_id = status_message.id if status_message else 0
     original_chat_id = chat
-    key = f"{task_uuid}:up" if task_uuid else f"{original_chat_id}:{original_msg_id}:up"
+    key = f"{task_uuid}:up"
     last_text = ""
     while True:
         current_msg_id = original_msg_id
@@ -749,9 +736,8 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
         percent = rec.get("percent", 0)
         
-        current_action = f"📤 Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}"
+        current_action = f"📤 Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "UPLOADING")
-        status_text += f"\n\n**⏳ ETA:** {eta_str}"
 
         if not task_info.get("confirming_cancel"):
             if status_text != last_text or task_info.get("force_update_ui"):
@@ -808,7 +794,7 @@ async def send_start(client: Client, message: Message):
     except Exception as e:
         print(f"Failed to save user {user_id}: {e}")
 
-    welcome_video_url = "https://files.catbox.moe/o9azww.mp4"
+    welcome_video_url = "https://holy-field-055f.lucifermotivational.workers.dev/0:/Google%20Flow%20%E2%80%93%20Sept%2004%20-%2016-28.mp4"
     welcome_text = (
         f"<b>👋 Hi {message.from_user.mention}, I am Save Restricted Content Bot.</b>\n\n"
         "<b>For downloading restricted content /login first.</b>\n\n"
@@ -816,8 +802,8 @@ async def send_start(client: Client, message: Message):
     )
     
     buttons = [
-        [InlineKeyboardButton("❣️ Developer", url = "https://t.me/thanuj66")],
-        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/telegram'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/telegram')]
+        [InlineKeyboardButton("❣️ Developer", url = "https://t.me/LuciferOpenSource")],
+        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/LuciferOpenSourceDiscussionGroup'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/LuciferOpenSource')]
     ]
 
     try:
@@ -2151,6 +2137,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
             primary_dest = targets[0]['dest_id'] if targets else "unknown_dest"
             saved_msg_id = await db.get_sync_progress(user_id, chatid_check, primary_dest)
 
+            skip_duplicates_amount = 0
+            
             if saved_msg_id >= toID:
                 skip_msg = (f"⏭ **DUPLICATE SKIPPED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n✅ **Status:** Files up to ID `{toID}` are already synced.")
                 try: await client.send_message(message.chat.id, skip_msg, reply_to_message_id=message.id)
@@ -2160,6 +2148,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 return
                 
             elif saved_msg_id >= fromID and saved_msg_id < toID:
+                skip_duplicates_amount = (saved_msg_id - fromID) + 1
                 fromID = saved_msg_id + 1
                 resume_msg = (f"♻️ **AUTO-RESUME ACTIVATED!**\n🤖 **Bot/User:** {user_mention}\n📂 **Source ID:** `{chatid_check}`\n🎯 **Destination:** `{dest_title}`\n▶️ **Resuming From ID:** `{fromID}`")
                 try: await client.send_message(message.chat.id, resume_msg, reply_to_message_id=message.id)

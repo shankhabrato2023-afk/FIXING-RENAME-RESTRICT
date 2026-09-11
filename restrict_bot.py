@@ -467,40 +467,6 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX: SMART QUALITY TAGGER + UNDERSCORE REMOVER
-def smart_rename(filename, caption_text=""):
-    fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
-    cap_str = str(caption_text or "").strip()
-    
-    def clean_text(text):
-        text = text.replace('_', ' ')
-        while True:
-            old_text = text
-            text = re.sub(r'^[^a-zA-Z0-9]*(\[.*?\]|\(.*?\))[^a-zA-Z0-9]*', '', text)
-            text = re.sub(r'^[^a-zA-Z0-9]*@[a-zA-Z0-9]+[^a-zA-Z0-9]*', '', text)
-            if old_text == text: break
-        text = re.sub(r'@[a-zA-Z0-9]+\b', '', text)
-        text = re.sub(r'\s+', ' ', text)
-        return text.strip(' -|:')
-        
-    name, ext = os.path.splitext(fname_str)
-    perfect_name = clean_text(name)
-    
-    if len(perfect_name) < 3: 
-        perfect_name = name.replace('_', ' ')
-
-    quality_pattern = re.compile(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', re.IGNORECASE)
-    if not quality_pattern.search(perfect_name):
-        perfect_name = perfect_name + " 720p"
-        
-    perfect_filename = perfect_name + ext
-    
-    perfect_caption = clean_text(cap_str)
-    if perfect_caption and not quality_pattern.search(perfect_caption):
-        perfect_caption = perfect_caption + " 720p"
-
-    return perfect_caption, perfect_filename
-
 async def check_link_restriction(user_id, link_text):
     clean_text = link_text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "")
     
@@ -633,7 +599,7 @@ def _split_file_smart(file_path, chunk_size):
             part_num += 1
     return parts
 
-# 🚀 BUG FIX: PROGRESS FUNCTION FIXED FOR UI UPDATES
+# 🚀 PROGRESS FUNCTION UI UPDATES
 def progress(current, total, task_uuid, typ):
     if task_uuid and CANCEL_FLAGS.get(task_uuid):
         raise Exception("CANCELLED_BY_USER")
@@ -1829,7 +1795,7 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
                 api_hash=u_hash, 
                 workers=4, 
                 ipv6=False,
-                in_memory=True # Memory Fix
+                in_memory=True
             )
             new_client.add_handler(MessageHandler(user_watcher_handler))
             
@@ -2405,37 +2371,44 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     elif msg_type == "Photo": original_filename = f"{msgid}.jpg"
     elif msg_type == "Voice": original_filename = f"{msgid}.ogg"
 
-    # 🚀 TEXT MESSAGE BOLD FIX
+    # 🚀 FOR TEXT MESSAGES (EXACT CLONE FORMATTING)
     if "Text" == msg_type:
-        raw_text = msg.text if getattr(msg, "text", None) else ""
-        perfect_text, _ = smart_rename("", raw_text)
-        clean_text = f"<b><i>{perfect_text}</i></b>" if perfect_text else ""
         for dest in targets:
-            try: await client.send_message(dest['dest_id'], clean_text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=dest.get('dest_thread'))
-            except: pass
+            try: 
+                await client.copy_message(
+                    chat_id=dest['dest_id'], 
+                    from_chat_id=chatid, 
+                    message_id=msgid, 
+                    reply_to_message_id=dest.get('dest_thread')
+                )
+            except Exception:
+                try:
+                    await acc.copy_message(
+                        chat_id=dest['dest_id'], 
+                        from_chat_id=chatid, 
+                        message_id=msgid, 
+                        reply_to_message_id=dest.get('dest_thread')
+                    )
+                except: pass
         return True, "success"
 
-    # 🚀 CAPTION BOLD FIX
-    raw_caption = msg.caption if getattr(msg, "caption", None) else ""
-    perfect_caption, perfect_filename = smart_rename(original_filename, raw_caption)
-    clean_caption = f"<b><i>{perfect_caption}</i></b>" if perfect_caption else ""
-
+    # 🚀 UNRESTRICTED FORWARD (EXACT CLONE FORMATTING)
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):
         forward_success = False
         for dest in targets:
             dest_chat_id = dest['dest_id']
             dest_thread_id = dest.get('dest_thread')
             try:
-                await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
+                await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id)
                 forward_success = True
             except Exception:
                 try:
-                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
+                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id)
                     forward_success = True
                 except FloodWait as e:
                     if e.value > 300: raise e
                     await asyncio.sleep(e.value + 2)
-                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
+                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id)
                     forward_success = True
                 except Exception as e:
                     print(f"Task Fast-Copy blocked: {e}")
@@ -2452,7 +2425,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     task_folder_path = Path(f"./downloads/{user_id}/{task_uuid}/{msgid}/")
     task_folder_path.mkdir(parents=True, exist_ok=True)
 
-    safe_filename = sanitize_filename(perfect_filename)
+    safe_filename = sanitize_filename(original_filename)
     if not safe_filename.strip(): safe_filename = f"{msgid}.dat"
     file_path_to_save = task_folder_path / safe_filename
 
@@ -2491,7 +2464,8 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                                     retry_part = 0
                                     while retry_part < 5: 
                                         try:
-                                            await client.send_document(dest_chat_id, str(part), caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
+                                            # 🚀 EXACT CAPTION CLONE FOR SPLIT FILES
+                                            await client.send_document(dest_chat_id, str(part), caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
                                             break
                                         except FloodWait as e: 
                                             await asyncio.sleep(e.value + 5)
@@ -2551,12 +2525,13 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     while retry_count < 5: 
                         if task_uuid and CANCEL_FLAGS.get(task_uuid): break
                         try:
-                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
-                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
+                            # 🚀 EXACT CAPTION CLONE FOR DOWNLOADED FILES
+                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id)
+                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id)
                             elif "Sticker" == msg_type: await uploader.send_sticker(dest_chat_id, file_path, reply_to_message_id=dest_thread_id)
                             success_local = True
                             break 
@@ -2653,30 +2628,21 @@ async def process_watcher_message(client, message):
             fallback_to_download = False
             safe_source_id = message.chat.username if message.chat.username else chat_id
             
+            # 🚀 EXACT CLONE FOR TEXT WATCHERS
             if msg_type == "Text":
-                raw_text = message.text if getattr(message, "text", None) else ""
-                perfect_text, _ = smart_rename("", raw_text)
-                clean_text = f"<b><i>{perfect_text}</i></b>" if perfect_text else ""
                 for t in targets:
-                    try: await app.send_message(t['dest_id'], clean_text, parse_mode=enums.ParseMode.HTML, disable_web_page_preview=True, reply_to_message_id=t.get('dest_thread'))
+                    try: await app.copy_message(chat_id=t['dest_id'], from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=t.get('dest_thread'))
                     except: pass
                 return
-
-            original_filename = "unknown_file"
-            if getattr(message, "document", None) and getattr(message.document, "file_name", None): original_filename = message.document.file_name
-            elif getattr(message, "video", None) and getattr(message.video, "file_name", None): original_filename = message.video.file_name
-            
-            raw_caption = message.caption if getattr(message, "caption", None) else ""
-            perfect_caption, _ = smart_rename(original_filename, raw_caption)
-            clean_caption = f"<b><i>{perfect_caption}</i></b>" if perfect_caption else ""
 
             for t in targets:
                 success = False
                 dest_id = t['dest_id']
                 dest_thread = t.get('dest_thread')
                 
+                # 🚀 EXACT CLONE FOR MEDIA WATCHERS
                 try: 
-                    await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
+                    await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread)
                     success = True
                 except Exception as e1: 
                     try:
@@ -2685,7 +2651,7 @@ async def process_watcher_message(client, message):
                         pass
 
                     try: 
-                        await client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
+                        await client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, reply_to_message_id=dest_thread)
                         success = True
                     except Exception as e2:
                         try:

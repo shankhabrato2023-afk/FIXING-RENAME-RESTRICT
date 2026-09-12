@@ -599,7 +599,6 @@ def _split_file_smart(file_path, chunk_size):
             part_num += 1
     return parts
 
-# 🚀 PROGRESS FUNCTION UI UPDATES
 def progress(current, total, task_uuid, typ):
     if task_uuid and CANCEL_FLAGS.get(task_uuid):
         raise Exception("CANCELLED_BY_USER")
@@ -1795,7 +1794,7 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
                 api_hash=u_hash, 
                 workers=4, 
                 ipv6=False,
-                in_memory=True
+                in_memory=True # Memory Fix
             )
             new_client.add_handler(MessageHandler(user_watcher_handler))
             
@@ -2371,7 +2370,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     elif msg_type == "Photo": original_filename = f"{msgid}.jpg"
     elif msg_type == "Voice": original_filename = f"{msgid}.ogg"
 
-    # 🚀 FOR TEXT MESSAGES (EXACT CLONE FORMATTING)
+    # 🚀 FOR TEXT MESSAGES (EXACT CLONE FORMATTING & BUTTONS)
     if "Text" == msg_type:
         for dest in targets:
             try: 
@@ -2383,16 +2382,18 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 )
             except Exception:
                 try:
-                    await acc.copy_message(
+                    await acc.send_message(
                         chat_id=dest['dest_id'], 
-                        from_chat_id=chatid, 
-                        message_id=msgid, 
-                        reply_to_message_id=dest.get('dest_thread')
+                        text=msg.text,
+                        entities=msg.entities,
+                        reply_markup=msg.reply_markup,
+                        reply_to_message_id=dest.get('dest_thread'),
+                        disable_web_page_preview=True
                     )
                 except: pass
         return True, "success"
 
-    # 🚀 UNRESTRICTED FORWARD (EXACT CLONE FORMATTING)
+    # 🚀 UNRESTRICTED FORWARD (EXACT CLONE FORMATTING & BUTTONS)
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):
         forward_success = False
         for dest in targets:
@@ -2465,7 +2466,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                                     while retry_part < 5: 
                                         try:
                                             # 🚀 EXACT CAPTION CLONE FOR SPLIT FILES
-                                            await client.send_document(dest_chat_id, str(part), caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
+                                            await client.send_document(dest_chat_id, str(part), caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
                                             break
                                         except FloodWait as e: 
                                             await asyncio.sleep(e.value + 5)
@@ -2526,13 +2527,13 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                         if task_uuid and CANCEL_FLAGS.get(task_uuid): break
                         try:
                             # 🚀 EXACT CAPTION CLONE FOR DOWNLOADED FILES
-                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id)
-                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_to_message_id=dest_thread_id)
-                            elif "Sticker" == msg_type: await uploader.send_sticker(dest_chat_id, file_path, reply_to_message_id=dest_thread_id)
+                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id)
+                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id)
+                            elif "Sticker" == msg_type: await uploader.send_sticker(dest_chat_id, file_path, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id)
                             success_local = True
                             break 
                         except FloodWait as e:
@@ -2631,8 +2632,12 @@ async def process_watcher_message(client, message):
             # 🚀 EXACT CLONE FOR TEXT WATCHERS
             if msg_type == "Text":
                 for t in targets:
-                    try: await app.copy_message(chat_id=t['dest_id'], from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=t.get('dest_thread'))
-                    except: pass
+                    try: 
+                        await app.copy_message(chat_id=t['dest_id'], from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=t.get('dest_thread'))
+                    except Exception:
+                        try:
+                            await app.send_message(chat_id=t['dest_id'], text=message.text, entities=message.entities, reply_markup=message.reply_markup, reply_to_message_id=t.get('dest_thread'), disable_web_page_preview=True)
+                        except: pass
                 return
 
             for t in targets:

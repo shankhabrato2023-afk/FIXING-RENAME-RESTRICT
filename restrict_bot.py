@@ -2378,17 +2378,17 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     chat_id=dest['dest_id'], 
                     from_chat_id=chatid, 
                     message_id=msgid, 
-                    reply_to_message_id=dest.get('dest_thread')
+                    reply_to_message_id=dest.get('dest_thread'),
+                    reply_markup=msg.reply_markup
                 )
             except Exception:
                 try:
-                    await acc.send_message(
+                    await acc.copy_message(
                         chat_id=dest['dest_id'], 
-                        text=msg.text,
-                        entities=msg.entities,
-                        reply_markup=msg.reply_markup,
+                        from_chat_id=chatid, 
+                        message_id=msgid, 
                         reply_to_message_id=dest.get('dest_thread'),
-                        disable_web_page_preview=True
+                        reply_markup=msg.reply_markup
                     )
                 except: pass
         return True, "success"
@@ -2400,16 +2400,16 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             dest_chat_id = dest['dest_id']
             dest_thread_id = dest.get('dest_thread')
             try:
-                await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id)
+                await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, reply_markup=msg.reply_markup)
                 forward_success = True
             except Exception:
                 try:
-                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id)
+                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, reply_markup=msg.reply_markup)
                     forward_success = True
                 except FloodWait as e:
                     if e.value > 300: raise e
                     await asyncio.sleep(e.value + 2)
-                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id)
+                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, reply_markup=msg.reply_markup)
                     forward_success = True
                 except Exception as e:
                     print(f"Task Fast-Copy blocked: {e}")
@@ -2633,10 +2633,10 @@ async def process_watcher_message(client, message):
             if msg_type == "Text":
                 for t in targets:
                     try: 
-                        await app.copy_message(chat_id=t['dest_id'], from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=t.get('dest_thread'))
+                        await app.copy_message(chat_id=t['dest_id'], from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=t.get('dest_thread'), reply_markup=message.reply_markup)
                     except Exception:
                         try:
-                            await app.send_message(chat_id=t['dest_id'], text=message.text, entities=message.entities, reply_markup=message.reply_markup, reply_to_message_id=t.get('dest_thread'), disable_web_page_preview=True)
+                            await client.copy_message(chat_id=t['dest_id'], from_chat_id=chat_id, message_id=message.id, reply_to_message_id=t.get('dest_thread'), reply_markup=message.reply_markup)
                         except: pass
                 return
 
@@ -2647,7 +2647,7 @@ async def process_watcher_message(client, message):
                 
                 # 🚀 EXACT CLONE FOR MEDIA WATCHERS
                 try: 
-                    await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread)
+                    await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, reply_markup=message.reply_markup)
                     success = True
                 except Exception as e1: 
                     try:
@@ -2656,7 +2656,7 @@ async def process_watcher_message(client, message):
                         pass
 
                     try: 
-                        await client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, reply_to_message_id=dest_thread)
+                        await client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, reply_to_message_id=dest_thread, reply_markup=message.reply_markup)
                         success = True
                     except Exception as e2:
                         try:

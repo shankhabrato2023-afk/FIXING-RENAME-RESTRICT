@@ -426,12 +426,9 @@ def sanitize_filename(filename: str) -> str:
 
 # 🚀 SMART RENAME LOGIC (ONLY FOR FILE NAMES, CAPTIONS EXACT CLONE)
 def smart_rename(filename):
-    fname_str = urllib.parse.unquote(str(filename or "Unknown_File.mkv")).strip()
+    fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     
-    # 1. Check trailing junk just in case (e.g., .mkv@Username)
-    fname_str = re.sub(r'@[a-zA-Z0-9_]+\s*$', '', fname_str)
-
-    # 2. Extract all valid extensions (.mkv.001, .mp4.002, etc.)
+    # 1. Safely extract extension (preserves .mkv.001 etc.)
     ext = ""
     m = re.search(r'(\.[a-zA-Z0-9]{2,5})+$', fname_str)
     if m:
@@ -440,30 +437,32 @@ def smart_rename(filename):
     else:
         name = fname_str
 
-    # 3. Clean Name logic (Replace _ with Space FIRST)
+    # 2. Replace ALL underscores with spaces FIRST
     name = name.replace('_', ' ')
-    
+
+    # 3. Clean leading [Brackets] and @username repeatedly until none are left
     while True:
         old_name = name
-        # Remove brackets at the very beginning
-        name = re.sub(r'^[^a-zA-Z0-9]*(\[.*?\]|\(.*?\))[^a-zA-Z0-9]*', '', name)
-        # Remove @username at the very beginning
-        name = re.sub(r'^[^a-zA-Z0-9]*@[a-zA-Z0-9_]+[^a-zA-Z0-9]*', '', name)
+        # Remove starting @username
+        name = re.sub(r'^@[a-zA-Z0-9]+\s*', '', name)
+        # Remove starting [Any text]
+        name = re.sub(r'^\[.*?\]\s*', '', name)
         if old_name == name: 
             break
             
-    # Remove standalone @usernames anywhere in the name
-    name = re.sub(r'@[a-zA-Z0-9_]+\b', '', name)
+    # 4. Remove any standalone @usernames anywhere in the file name
+    name = re.sub(r'@[a-zA-Z0-9]+\b', '', name)
     
-    # Clean up double spaces and side dashes
+    # 5. Clean up extra spaces and trailing junk
     name = re.sub(r'\s+', ' ', name).strip(' -|:')
-        
+    
     if len(name) < 3: 
+        # Failsafe if the name becomes too short
         name = fname_str.replace('_', ' ')
         if ext and name.endswith(ext):
             name = name[:-len(ext)]
 
-    # Fake Quality Tagger (adds 720p if no quality tag found)
+    # 6. Smart Quality Tagger
     quality_pattern = re.compile(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', re.IGNORECASE)
     if not quality_pattern.search(name):
         name = name + " 720p"
@@ -509,7 +508,6 @@ async def check_link_restriction(user_id, link_text):
         
         api_id = await db.get_api_id(user_id)
         api_hash = await db.get_api_hash(user_id)
-        # Session Memory Flag Enabled
         check_client = Client(f"check_{user_id}_{int(time.time())}", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False, in_memory=True)
         is_temp_client = True
 
@@ -827,8 +825,8 @@ async def send_cancel(client: Client, message: Message):
     for tid, info in list(user_tasks.items()):
         label = info.get("item", "Task")
         label_short = (label[:26] + "...") if len(label) > 29 else label
-        buttons.append([InlineKeyboardButton(f"🛑 {label_short}", callback_data=f"cancel_task:{tid}")])
-    buttons.append([InlineKeyboardButton("🛑 Cancel ALL My Tasks", callback_data="cancel_all")])
+        buttons.append([InlineKeyboardButton(f"🛑 {label_short}", callback_data=f"ask_cancel:{tid}")])
+    buttons.append([InlineKeyboardButton("🛑 Cancel ALL My Tasks", callback_data="ask_cancel_all")])
     buttons.append([InlineKeyboardButton("❌ Close Menu", callback_data="close_menu")])
 
     await message.reply(
@@ -837,7 +835,7 @@ async def send_cancel(client: Client, message: Message):
         quote=True
     )
     
-@app.on_callback_query(filters.regex(r"^cancel_") | filters.regex(r"^cancel_task:"))
+@app.on_callback_query(filters.regex(r"^cancel_") | filters.regex(r"^cancel_task:") | filters.regex(r"^ask_cancel") | filters.regex(r"^resume_task:"))
 async def cancel_callback(client: Client, query):
     user_id = query.from_user.id
     data = query.data
@@ -869,6 +867,39 @@ async def cancel_callback(client: Client, query):
         for tid in user_tasks:
             CANCEL_FLAGS[tid] = True 
         await query.message.edit("**🛑 Cancelling ALL your tasks...**\n(This may take a moment to stop current downloads)")
+        return
+
+    if data.startswith("ask_cancel:"):
+        task_uuid = data.split(":",1)[1]
+        user_tasks = ACTIVE_PROCESSES.get(user_id, {})
+        if task_uuid not in user_tasks:
+            await query.answer("Task not found or already finished.", show_alert=True)
+            try: await query.message.delete()
+            except: pass
+            return
+            
+        user_tasks[task_uuid]["confirming_cancel"] = True
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ YES, CANCEL", callback_data=f"cancel_task:{task_uuid}")],
+            [InlineKeyboardButton("❌ NO, RESUME", callback_data=f"resume_task:{task_uuid}")]
+        ])
+        await query.message.edit("⚠️ **Are you sure you want to cancel this task?**\n\n*(Background progress will pause updating here until you choose)*", reply_markup=kb)
+        return
+
+    if data.startswith("resume_task:"):
+        task_uuid = data.split(":",1)[1]
+        user_tasks = ACTIVE_PROCESSES.get(user_id, {})
+        if task_uuid in user_tasks:
+            user_tasks[task_uuid]["confirming_cancel"] = False
+            user_tasks[task_uuid]["force_update_ui"] = True
+            await query.answer("▶️ Task Resumed!", show_alert=False)
+            if query.message.id != user_tasks[task_uuid].get("status_msg_id"):
+                try: await query.message.delete()
+                except: pass
+        else:
+            await query.answer("Task already finished.", show_alert=True)
+            try: await query.message.delete()
+            except: pass
         return
 
     if data.startswith("cancel_task:"):
@@ -1954,7 +1985,7 @@ async def start_task_final(client: Client, message_context: Message, task_data: 
     
 async def process_links_logic(client: Client, message: Message, text: str, targets=None, dest_title="Direct Message", delay=3, acc_user_id=None, task_uuid=None, is_restricted=False, allowed_types=None):
     user_id = acc_user_id or (message.from_user.id if message.from_user else 0)
-    user_mention = message.from_user.mention if message.from_user else f"User({user_id})"
+    user_mention = message.from_user.mention if getattr(message, "from_user", None) else f"User({user_id})"
     
     if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
     if not task_uuid: task_uuid = uuid.uuid4().hex
@@ -1984,17 +2015,18 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
     if "https://t.me/" in text:
         acc = None
         is_temp_client = False 
-        success_count = 0
-        failed_count = 0
-        total_count = 0
         status_message = None
         filter_thread_id = None 
-        
         start_time = time.time()
         source_title = "Unknown Source"
+        
+        # FIX: Moved count trackers outside try-block to ensure they are available
+        total_count = 0
+        success_count = 0
+        failed_count = 0
+        was_cancelled = False
 
         try:
-            was_cancelled = False
             clean_text = text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "")
             parts = clean_text.split("/")
 
@@ -2022,7 +2054,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     workers=4,
                     sleep_threshold=60,
                     ipv6=False,
-                    in_memory=True # Memory Fix
+                    in_memory=True
                 )
                 await acc.start()
                 is_temp_client = True
@@ -2049,6 +2081,10 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     except: toID = fromID
             else:
                 fromID = toID = int(last_segment)
+
+            # FIX: Ensure fromID is smaller or equal to toID before looping
+            if fromID > toID:
+                fromID, toID = toID, fromID
 
             if fromID == toID:
                 try:
@@ -2087,7 +2123,19 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 source_title = source_chat.title or "Private Chat"
             except: pass
 
-            ACTIVE_PROCESSES[user_id][task_uuid].update({"source_title": source_title, "total": total_count, "current": 0})
+            task_info.update({
+                "source_title": source_title, 
+                "total": total_count, 
+                "current": 0,
+                "fetched": 0,
+                "success": 0,
+                "duplicate": 0, 
+                "deleted": 0,
+                "skipped": 0,
+                "filtered": 0,
+                "failed": 0,
+                "current_status_text": "Starting Batch..."
+            })
 
             status_text_header = f"**Batch Task Started!** 🚀\n"
             if filter_thread_id:
@@ -2161,9 +2209,10 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     print(f"Error processing {msgid}: {e}")
                     pass
 
+                # FIX: Progress Update and Success Counter Fix
                 if is_success: success_count += 1
                 else: failed_count += 1
-
+                
                 task_info["fetched"] += 1
                 task_info["success"] = success_count
                 task_info["failed"] = failed_count
@@ -2203,6 +2252,18 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
             await send_log(f"❌ **Task Crashed**\nUser: `{user_id}`\nError: `{e}`")
 
         finally:
+            if 'was_cancelled' in locals() and was_cancelled:
+                header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
+            else:
+                header = f"Batch was Completed! ✅ {user_mention} ✨"
+
+            try:
+                active_chat = task_info.get("status_chat_id", message.chat.id)
+                active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
+                if active_msg_id:
+                    await client.delete_messages(active_chat, active_msg_id)
+            except Exception: pass
+
             if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):
                 try: del ACTIVE_PROCESSES[user_id][task_uuid]
                 except: pass
@@ -2226,12 +2287,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
             duration = time.time() - start_time
             time_taken_str = get_readable_time(int(duration))
-            
-            if 'was_cancelled' in locals() and was_cancelled:
-                header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
-            else:
-                header = f"Batch was Completed! ✅ {user_mention} ✨"
 
+            # Old UI exact format for final log
             final_text = (
                 f"{header}\n"
                 f"📝 **Task :** {source_title} → {dest_title}\n"
@@ -2243,8 +2300,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
             )
             
             try: await client.send_message(message.chat.id, final_text, reply_to_message_id=message.id)
-            except: pass
-            try: await status_message.delete()
             except: pass
 
 async def handle_private(client: Client, acc, message: Message, chatid, msgid: int, index: int, total_count: int, status_message: Message, targets: list, delay, user_id, task_uuid=None, is_restricted=False, header_text="", filter_thread_id=None, allowed_types=None):
@@ -2280,16 +2335,16 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     except Exception: pass
 
     original_filename = "unknown_file"
-    if msg.document and msg.document.file_name: original_filename = msg.document.file_name
-    elif msg.video and msg.video.file_name: original_filename = msg.video.file_name
-    elif msg.audio and msg.audio.file_name: original_filename = msg.audio.file_name
+    if getattr(msg, "document", None) and getattr(msg.document, "file_name", None): original_filename = msg.document.file_name
+    elif getattr(msg, "video", None) and getattr(msg.video, "file_name", None): original_filename = msg.video.file_name
+    elif getattr(msg, "audio", None) and getattr(msg.audio, "file_name", None): original_filename = msg.audio.file_name
     elif msg_type == "Photo": original_filename = f"{msgid}.jpg"
     elif msg_type == "Voice": original_filename = f"{msgid}.ogg"
 
-    # 🚀 RENAMING ONLY ON FILE NAME (Caption is untouched)
+    # 🚀 RENAMING ONLY ON FILE NAME (Caption and Inline buttons stay 100% Exact Clone)
     perfect_filename = smart_rename(original_filename)
 
-    # 🚀 FAST FORWARD EXACT CLONE
+    # 🚀 FAST FORWARD EXACT CLONE (Only text emojis quotes buttons everything same)
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):
         forward_success = False
         for dest in targets:
@@ -2457,7 +2512,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                         try:
                             # 🚀 EXACT UPLOAD CLONE WITH ALL ENTITIES AND BUTTONS
                             if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
-                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
+                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
                             elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
                             elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id)
                             elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=msg.caption, caption_entities=msg.caption_entities, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])

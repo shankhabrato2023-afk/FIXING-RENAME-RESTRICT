@@ -59,9 +59,6 @@ STRING_SESSION = os.environ.get("STRING_SESSION", None)
 # Error Log Channel (Optional)
 LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "") 
 
-# ⏱ STATUS UPDATE TIME (Seconds) -> 10 Seconds par set hai
-STATUS_UPDATE_INTERVAL = int(os.environ.get("STATUS_UPDATE_INTERVAL", 10))
-
 # Queue System
 TASK_QUEUE = defaultdict(list) 
 
@@ -424,14 +421,14 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 SMART CAPTION LOGIC (Replaces File Name Logic exactly as you asked)
+# 🚀 SMART CAPTION LOGIC (Strictly follows user rules)
 def smart_caption(text_html):
     if not text_html: return ""
     
-    # 1. Replace underscores with spaces FIRST
+    # 1. Replace all underscores with spaces
     text_html = text_html.replace('_', ' ')
     
-    # 2. Extract extension safely (.mkv, .mkv.001, etc.) from the very end of text/tags
+    # 2. Safely extract trailing extensions (.mkv, .mkv.001) preserving HTML tags
     ext = ""
     m_ext = re.search(r'(\.[a-zA-Z0-9]{2,5}(?:\.\d{3,4})?)(\s*(?:</[^>]+>)*\s*)$', text_html)
     if m_ext:
@@ -439,24 +436,27 @@ def smart_caption(text_html):
         closing_tags = m_ext.group(2)
         text_html = text_html[:m_ext.start(1)] + closing_tags
         
-    # 3. Clean leading [Brackets], (Parentheses), and @username safely without breaking HTML
-    for _ in range(2):
-        # Remove leading @username
-        text_html = re.sub(r'^((?:<[^>]+>)*\s*)@[a-zA-Z0-9]+(\s*)', r'\1', text_html)
-        # Remove leading [text] or (text)
+    # 3. Strip starting brackets/tags and starting @usernames recursively
+    while True:
+        old_text = text_html
+        # Remove starting @username
+        text_html = re.sub(r'^((?:<[^>]+>)*\s*)@[a-zA-Z0-9_]+(\s*)', r'\1', text_html)
+        # Remove starting [tag] or (tag)
         text_html = re.sub(r'^((?:<[^>]+>)*\s*)(?:\[.*?\]|\(.*?\))(\s*)', r'\1', text_html)
-        
-    # 4. Remove trailing @username (e.g. @ONAAMovies) safely
-    text_html = re.sub(r'(@[a-zA-Z0-9]+)(\s*(?:</[^>]+>)*\s*)$', r'\2', text_html)
-        
-    # 5. Smart Quality Tagger
+        if old_text == text_html:
+            break
+            
+    # 4. Remove trailing @username at the very end of the text
+    text_html = re.sub(r'(@[a-zA-Z0-9_]+)(\s*(?:</[^>]+>)*\s*)$', r'\2', text_html)
+    
+    # 5. Add 720p safely if no quality tag exists
     if not re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE):
         m_tags = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
         if m_tags:
             text_html = text_html[:m_tags.start()] + " 720p" + m_tags.group(1)
         else:
             text_html += " 720p"
-            
+
     # 6. Re-attach extension
     m_tags2 = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
     if m_tags2:
@@ -464,7 +464,7 @@ def smart_caption(text_html):
     else:
         text_html += ext
         
-    # Clean up double spaces without breaking tags
+    # Clean double spaces
     text_html = re.sub(r' {2,}', ' ', text_html)
     
     return text_html.strip()
@@ -2138,11 +2138,14 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
             if filter_thread_id:
                 status_text_header += f"**Filter:** `Topic {filter_thread_id} Only` 🎯\n"
 
+            cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
+
             if is_restricted:
                 try:
                     status_message = await client.send_message(
                         message.chat.id,
                         f"⚡ **Initializing Task...**\n{status_text_header}\nSource: {source_title}\nTotal Files: {total_count}",
+                        reply_markup=cancel_btn,
                         reply_to_message_id=message.id
                     )
                     task_info["status_msg_id"] = status_message.id
@@ -2155,6 +2158,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                         f"{status_text_header}\n\n{generate_bar(0)}\n\n"
                         f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
                         f"**Total:** {total_count}\n**Processed:** 0\n**Success:** 0\n**Failed:** 0\n**ETA:** ...",
+                        reply_markup=cancel_btn,
                         reply_to_message_id=message.id
                     )
                     task_info["status_msg_id"] = status_message.id
@@ -2197,7 +2201,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
                     wait_msg = f"⏳ **Rate Limiting Detected**\nSleeping for {e.value} seconds..."
                     try: 
-                        if not is_restricted: await status_message.edit_text(wait_msg)
+                        if not is_restricted and not task_info.get("confirming_cancel"): await status_message.edit_text(wait_msg)
                     except: pass
                     await asyncio.sleep(e.value + 5)
                     continue
@@ -2227,21 +2231,39 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 if not was_cancelled and is_success: 
                     await db.save_sync_progress(user_id, chatid_check, primary_dest, msgid)
 
-                if not is_restricted:
-                    current_now = time.time()
-                    if (index % 20 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID:
+                needs_refresh = task_info.get("needs_refresh", False)
+                if not is_restricted and not task_info.get("confirming_cancel"):
+                    # 🚀 FIX: Updates ONLY strictly every 20 messages OR at the very end OR on /tasks!
+                    if (index % 20 == 0) or msgid == toID or needs_refresh:
+                        current_now = time.time()
                         elapsed = current_now - start_time
                         percent = (index / total_count) * 100
-                        eta_str = get_readable_time(int(((total_count - index) / (index / elapsed)))) if index > 0 else "..."
+                        eta_str = get_readable_time(int(((total_count - index) / (index / elapsed)))) if index > 0 and elapsed > 0 else "..."
                         
                         try:
-                            await status_message.edit_text(
-                                f"{status_text_header}\n\n{generate_bar(percent)}\n\n"
-                                f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
-                                f"**Total:** {total_count}\n**Processed:** {index}\n"
-                                f"**Success:** {success_count}\n**Failed:** {failed_count}\n**ETA:** {eta_str}"
-                            )
-                            last_update_time = current_now
+                            if needs_refresh:
+                                try: await status_message.delete()
+                                except: pass
+                                status_message = await client.send_message(
+                                    message.chat.id,
+                                    f"{status_text_header}\n\n{generate_bar(percent)}\n\n"
+                                    f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
+                                    f"**Total:** {total_count}\n**Processed:** {index}\n"
+                                    f"**Success:** {success_count}\n**Failed:** {failed_count}\n**ETA:** {eta_str}",
+                                    reply_markup=cancel_btn,
+                                    reply_to_message_id=message.id
+                                )
+                                task_info["status_msg_id"] = status_message.id
+                                task_info["status_chat_id"] = status_message.chat.id
+                                task_info["needs_refresh"] = False
+                            else:
+                                await status_message.edit_text(
+                                    f"{status_text_header}\n\n{generate_bar(percent)}\n\n"
+                                    f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
+                                    f"**Total:** {total_count}\n**Processed:** {index}\n"
+                                    f"**Success:** {success_count}\n**Failed:** {failed_count}\n**ETA:** {eta_str}",
+                                    reply_markup=cancel_btn
+                                )
                         except: pass
                     
         except Exception as e:
@@ -2341,10 +2363,10 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
         elif msg_type == "Photo": original_caption = f"{msgid}.jpg"
         elif msg_type == "Voice": original_caption = f"{msgid}.ogg"
 
-    # 🚀 SAFE SMART CAPTION CLONER
+    # 🚀 SAFE SMART CAPTION CLONER (Direct HTML edit, completely safe for formatting)
     clean_caption = smart_caption(original_caption)
 
-    # 🚀 EXACT TEXT MESSAGE CLONE WITH NEW CAPTION
+    # 🚀 EXACT TEXT MESSAGE CLONE WITH SMART CAPTION
     if "Text" == msg_type:
         for dest in targets:
             try: 
@@ -2369,7 +2391,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 except: pass
         return True
 
-    # 🚀 FAST FORWARD EXACT CLONE WITH CAPTION REPLACEMENT
+    # 🚀 FAST FORWARD EXACT CLONE WITH NEW SMART CAPTION
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):
         forward_success = False
         for dest in targets:
@@ -2402,7 +2424,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     task_folder_path = Path(f"./downloads/{user_id}/{task_uuid}/{msgid}/")
     task_folder_path.mkdir(parents=True, exist_ok=True)
 
-    # 🚀 RETAIN ORIGINAL FILE NAME ON DISK
+    # 🚀 RETAIN ORIGINAL FILE NAME ON DISK (File name downloading doesn't break formatting)
     original_filename = "unknown_file"
     if getattr(msg, "document", None) and getattr(msg.document, "file_name", None): original_filename = msg.document.file_name
     elif getattr(msg, "video", None) and getattr(msg.video, "file_name", None): original_filename = msg.video.file_name

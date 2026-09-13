@@ -424,11 +424,21 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 BUG FIX: SMART RENAME LOGIC (ONLY FOR FILE NAMES, NO CAPTIONS)
-def smart_rename(filename):
-    fname_str = urllib.parse.unquote(str(filename or "Unknown_File.mkv")).strip()
+# --- SAFE AGGRESSIVE SMART RENAME LOGIC ---
+def smart_rename(filename, caption_text=""):
+    fname_str = urllib.parse.unquote(str(filename or "Unknown_File.dat")).strip()
     
-    # Extract multiple extensions safely (e.g. .mkv.001)
+    def clean_text(text):
+        text = text.replace('_', ' ')
+        while True:
+            old_text = text
+            text = re.sub(r'^[^a-zA-Z0-9]*(\[.*?\]|\(.*?\))[^a-zA-Z0-9]*', '', text)
+            text = re.sub(r'^[^a-zA-Z0-9]*@[a-zA-Z0-9_]+[^a-zA-Z0-9]*', '', text)
+            if old_text == text: break
+        text = re.sub(r'@[a-zA-Z0-9_]+\b', '', text)
+        text = re.sub(r'\s+', ' ', text)
+        return text.strip(' -|:')
+        
     ext = ""
     m = re.search(r'(\.[a-zA-Z0-9]{2,5})+$', fname_str)
     if m:
@@ -437,35 +447,19 @@ def smart_rename(filename):
     else:
         name = fname_str
 
-    # 1. Remove @username tags from start (max 32 chars to protect movie names connected by underscores)
-    name = re.sub(r'^@[a-zA-Z0-9_]{2,32}[_\s\-]*', '', name)
+    perfect_name = clean_text(name)
     
-    # 2. Remove [Brackets] or (Parentheses) from start
-    name = re.sub(r'^(\[.*?\]|\(.*?\))[_\s\-]*', '', name)
-    
-    # 3. Remove another @username just in case format was [Tag] @username_Movie
-    name = re.sub(r'^@[a-zA-Z0-9_]{2,32}[_\s\-]*', '', name)
-    
-    # 4. Safely replace remaining underscores with spaces (Fixes the movie name deletion bug)
-    name = name.replace('_', ' ')
-    
-    # 5. Remove any standalone @usernames anywhere in the text
-    name = re.sub(r'@[a-zA-Z0-9_]+\b', '', name)
-    
-    # Clean up multiple spaces
-    name = re.sub(r'\s+', ' ', name).strip(' -|:')
-    
-    if len(name) < 3: 
-        name = fname_str.replace('_', ' ')
-        if ext and name.endswith(ext):
-            name = name[:-len(ext)]
+    if len(perfect_name) < 3: 
+        perfect_name = name.replace('_', ' ')
 
-    # Smart Quality Tagger
     quality_pattern = re.compile(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', re.IGNORECASE)
-    if not quality_pattern.search(name):
-        name = name + " 720p"
+    if not quality_pattern.search(perfect_name):
+        perfect_name = perfect_name + " 720p"
+        
+    perfect_filename = perfect_name + ext
+    perfect_caption = perfect_name
 
-    return name.strip() + ext
+    return perfect_caption, perfect_filename
 
 async def check_link_restriction(user_id, link_text):
     clean_text = link_text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "")
@@ -600,7 +594,6 @@ def _split_file_smart(file_path, chunk_size):
             part_num += 1
     return parts
 
-# 🚀 BUG FIX: UI UPDATER
 def progress(current, total, message, typ, task_uuid=None):
     if task_uuid and CANCEL_FLAGS.get(task_uuid):
         raise Exception("CANCELLED_BY_USER")
@@ -2130,20 +2123,32 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current_status_text": "Starting Batch..."
             })
 
-            initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
-            cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
+            status_text_header = f"**Batch Task Started!** 🚀\n"
+            if filter_thread_id:
+                status_text_header += f"**Filter:** `Topic {filter_thread_id} Only` 🎯\n"
 
-            try:
-                status_message = await client.send_message(
-                    message.chat.id,
-                    initial_ui,
-                    reply_markup=cancel_btn,
-                    reply_to_message_id=message.id
-                )
-                task_info["status_msg_id"] = status_message.id
-                task_info["status_chat_id"] = status_message.chat.id
-            except Exception as e:
-                pass
+            if is_restricted:
+                try:
+                    status_message = await client.send_message(
+                        message.chat.id,
+                        f"⚡ **Initializing Task...**\n{status_text_header}\nSource: {source_title}\nTotal Files: {total_count}",
+                        reply_to_message_id=message.id
+                    )
+                    task_info["status_msg_id"] = status_message.id
+                    task_info["status_chat_id"] = status_message.chat.id
+                except: pass
+            else:
+                try:
+                    status_message = await client.send_message(
+                        message.chat.id,
+                        f"{status_text_header}\n\n{generate_bar(0)}\n\n"
+                        f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
+                        f"**Total:** {total_count}\n**Processed:** 0\n**Success:** 0\n**Failed:** 0\n**ETA:** ...",
+                        reply_to_message_id=message.id
+                    )
+                    task_info["status_msg_id"] = status_message.id
+                    task_info["status_chat_id"] = status_message.chat.id
+                except: pass
 
             last_update_time = time.time()
             inner_header = f"Filter: Topic {filter_thread_id} Only 🎯" if filter_thread_id else ""
@@ -2218,7 +2223,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 needs_refresh = task_info.get("needs_refresh", False)
                 force_update = task_info.get("force_update_ui", False)
                 
-                if not task_info.get("confirming_cancel"):
+                if not is_restricted and not task_info.get("confirming_cancel"):
                     if (task_info["fetched"] % 5 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID or needs_refresh or force_update:
                         task_info["force_update_ui"] = False
                         percent = (task_info["fetched"] / total_count) * 100.0 if total_count > 0 else 0.0
@@ -2230,13 +2235,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                                 eta_sec = int(((total_count - task_info["fetched"]) / (task_info["fetched"] / elapsed)))
                                 eta_str = get_readable_time(eta_sec)
                             
-                        fresh_status_ui = generate_aesthetic_progress_ui(
-                            task_info, 
-                            current_status="Forwarding", 
-                            percent=percent, 
-                            footer_status="FORWARDING"
-                        ) + f"\n\n**⏳ ETA:** {eta_str}"
-                        
                         try:
                             active_chat = task_info.get("status_chat_id", message.chat.id)
                             active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
@@ -2244,7 +2242,15 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                             if needs_refresh:
                                 try: await client.delete_messages(active_chat, active_msg_id)
                                 except: pass
-                                new_msg = await client.send_message(message.chat.id, fresh_status_ui, reply_markup=cancel_btn, reply_to_message_id=message.id)
+                                new_msg = await client.send_message(
+                                    message.chat.id,
+                                    f"{status_text_header}\n\n{generate_bar(percent)}\n\n"
+                                    f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
+                                    f"**Total:** {total_count}\n**Processed:** {task_info['fetched']}\n"
+                                    f"**Success:** {task_info['success']}\n**Failed:** {task_info['failed']}\n**ETA:** {eta_str}",
+                                    reply_markup=cancel_btn, 
+                                    reply_to_message_id=message.id
+                                )
                                 task_info["status_msg_id"] = new_msg.id
                                 task_info["status_chat_id"] = new_msg.chat.id
                                 task_info["needs_refresh"] = False
@@ -2252,7 +2258,10 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                                 await client.edit_message_text(
                                     chat_id=active_chat,
                                     message_id=active_msg_id,
-                                    text=fresh_status_ui,
+                                    text=f"{status_text_header}\n\n{generate_bar(percent)}\n\n"
+                                         f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
+                                         f"**Total:** {total_count}\n**Processed:** {task_info['fetched']}\n"
+                                         f"**Success:** {task_info['success']}\n**Failed:** {task_info['failed']}\n**ETA:** {eta_str}",
                                     reply_markup=cancel_btn
                                 )
                             last_update_time = current_now
@@ -2264,31 +2273,15 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
         finally:
             if 'was_cancelled' in locals() and was_cancelled:
-                footer_tag = "ᴄᴀɴᴄᴇʟʟᴇᴅ"
-                status_word = "Cancelled"
                 header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
             else:
-                footer_tag = "ᴄᴏᴍᴘʟᴇᴛᴇᴅ"
-                status_word = "Completed"
                 header = f"Batch was Completed! ✅ {user_mention} ✨"
 
             try:
-                tot = task_info.get("total", 1)
-                if tot == 0: tot = 1
-                fet = task_info.get("fetched", 0)
-                final_percent = (fet / tot * 100.0) if tot > 0 else 0.0
-                if final_percent > 100.0: final_percent = 100.0
-                
-                final_status_ui = generate_aesthetic_progress_ui(
-                    task_info,
-                    current_status=status_word,
-                    percent=final_percent,
-                    footer_status=footer_tag
-                )
                 active_chat = task_info.get("status_chat_id", message.chat.id)
                 active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
                 if active_msg_id:
-                    await client.edit_message_text(chat_id=active_chat, message_id=active_msg_id, text=final_status_ui)
+                    await client.delete_messages(active_chat, active_msg_id)
             except Exception: pass
 
             if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):
@@ -2360,9 +2353,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     elif msg_type == "Photo": original_filename = f"{msgid}.jpg"
     elif msg_type == "Voice": original_filename = f"{msgid}.ogg"
 
-    # 🚀 RENAMING ONLY ON FILE NAME (Caption Exact Clone)
-    perfect_filename = smart_rename(original_filename)
-
     # 🚀 FOR TEXT MESSAGES (EXACT CLONE FORMATTING & BUTTONS)
     if "Text" == msg_type:
         for dest in targets:
@@ -2385,6 +2375,9 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     )
                 except: pass
         return True, "success"
+
+    # 🚀 RENAMING ONLY ON FILE NAME (Caption Exact Clone)
+    _, perfect_filename = smart_rename(original_filename, msg.caption.html if msg.caption else "")
 
     # 🚀 UNRESTRICTED FORWARD (EXACT CLONE FORMATTING & BUTTONS)
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):

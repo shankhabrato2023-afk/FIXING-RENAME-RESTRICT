@@ -59,6 +59,9 @@ STRING_SESSION = os.environ.get("STRING_SESSION", None)
 # Error Log Channel (Optional)
 LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "") 
 
+# ⏱ STATUS UPDATE TIME (Seconds) -> 10 Seconds par set hai
+STATUS_UPDATE_INTERVAL = int(os.environ.get("STATUS_UPDATE_INTERVAL", 10))
+
 # Queue System
 TASK_QUEUE = defaultdict(list) 
 
@@ -467,6 +470,10 @@ def smart_caption(text_html):
     # Clean double spaces
     text_html = re.sub(r' {2,}', ' ', text_html)
     
+    # PREVENT CAPTION TOO LONG ERROR
+    if len(text_html) > 1024:
+        pass
+        
     return text_html.strip()
 
 async def check_link_restriction(user_id, link_text):
@@ -2178,10 +2185,11 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     was_cancelled = True; break
 
                 is_success = False
+                status_reason = "failed"
                 try:
                     chat_id = int("-100" + parts[0]) if "https://t.me/c/" in text else parts[0]
                     
-                    is_success = await handle_private(
+                    is_success, status_reason = await handle_private(
                         client, acc, message, chat_id, msgid, index, total_count, 
                         status_message, targets, delay, 
                         user_id, task_uuid, 
@@ -2208,14 +2216,19 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     
                 except Exception as e: 
                     print(f"Error processing {msgid}: {e}")
-                    pass
+                    status_reason = "failed"
+
+                task_info["fetched"] += 1
+                if status_reason == "success": task_info["success"] += 1
+                elif status_reason == "deleted": task_info["deleted"] += 1
+                elif status_reason == "filtered": task_info["filtered"] += 1
+                elif status_reason == "dl_disabled": task_info["skipped"] += 1
+                elif status_reason == "skipped": task_info["skipped"] += 1
+                elif status_reason == "cancelled": was_cancelled = True; break
+                else: task_info["failed"] += 1
 
                 if is_success: success_count += 1
                 else: failed_count += 1
-                
-                task_info["fetched"] += 1
-                task_info["success"] = success_count
-                task_info["failed"] = failed_count
 
                 if index < total_count:
                     if is_success:
@@ -2225,7 +2238,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                     else:
                         await asyncio.sleep(0.05)
                         
-                if index % 100 == 0:
+                if task_info["fetched"] % 100 == 0:
                     gc.collect()
 
                 if not was_cancelled and is_success: 
@@ -2233,9 +2246,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
                 needs_refresh = task_info.get("needs_refresh", False)
                 if not is_restricted and not task_info.get("confirming_cancel"):
-                    # 🚀 FIX: Updates ONLY strictly every 20 messages OR at the very end OR on /tasks!
-                    if (index % 20 == 0) or msgid == toID or needs_refresh:
-                        current_now = time.time()
+                    current_now = time.time()
+                    if (index % 20 == 0) or (current_now - last_update_time >= STATUS_UPDATE_INTERVAL) or msgid == toID or needs_refresh:
                         elapsed = current_now - start_time
                         percent = (index / total_count) * 100
                         eta_str = get_readable_time(int(((total_count - index) / (index / elapsed)))) if index > 0 and elapsed > 0 else "..."
@@ -2250,7 +2262,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                                     f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
                                     f"**Total:** {total_count}\n**Processed:** {index}\n"
                                     f"**Success:** {success_count}\n**Failed:** {failed_count}\n**ETA:** {eta_str}",
-                                    reply_markup=cancel_btn,
+                                    reply_markup=cancel_btn, 
                                     reply_to_message_id=message.id
                                 )
                                 task_info["status_msg_id"] = status_message.id
@@ -2264,6 +2276,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                                     f"**Success:** {success_count}\n**Failed:** {failed_count}\n**ETA:** {eta_str}",
                                     reply_markup=cancel_btn
                                 )
+                            last_update_time = current_now
                         except: pass
                     
         except Exception as e:
@@ -2305,7 +2318,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
             duration = time.time() - start_time
             time_taken_str = get_readable_time(int(duration))
-
+            
             final_text = (
                 f"{header}\n"
                 f"📝 **Task :** {source_title} → {dest_title}\n"
@@ -2326,22 +2339,22 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     msg = None
     try:
         msg = await acc.get_messages(chatid, msgid)
-    except UserNotParticipant: return False
-    except Exception: return False
+    except UserNotParticipant: return False, "failed"
+    except Exception: return False, "failed"
 
-    if not msg or msg.empty: return False
+    if not msg or msg.empty: return False, "deleted"
     
     if filter_thread_id is not None:
         if getattr(msg, "message_thread_id", None) != filter_thread_id:
-            return False
+            return False, "filtered"
 
     msg_type = get_message_type(msg)
-    if not msg_type: return False
+    if not msg_type: return False, "filtered"
 
     if allowed_types is not None and msg_type not in allowed_types:
-        return False
+        return False, "filtered"
 
-    if task_uuid and CANCEL_FLAGS.get(task_uuid): return False
+    if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
 
     try:
         if status_message:
@@ -2378,20 +2391,29 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     parse_mode=enums.ParseMode.HTML,
                     disable_web_page_preview=True
                 )
-            except Exception:
-                try:
-                    await acc.send_message(
-                        chat_id=dest['dest_id'], 
-                        text=clean_caption,
-                        reply_markup=msg.reply_markup,
-                        reply_to_message_id=dest.get('dest_thread'),
-                        parse_mode=enums.ParseMode.HTML,
-                        disable_web_page_preview=True
-                    )
-                except: pass
-        return True
+            except Exception as e_text:
+                if "TOO_LONG" in str(e_text):
+                    clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:4000]
+                    try: await client.send_message(chat_id=dest['dest_id'], text=clean_caption, reply_markup=msg.reply_markup, reply_to_message_id=dest.get('dest_thread'), disable_web_page_preview=True)
+                    except: pass
+                else:
+                    try:
+                        await acc.send_message(
+                            chat_id=dest['dest_id'], 
+                            text=clean_caption,
+                            reply_markup=msg.reply_markup,
+                            reply_to_message_id=dest.get('dest_thread'),
+                            parse_mode=enums.ParseMode.HTML,
+                            disable_web_page_preview=True
+                        )
+                    except Exception as e_text2:
+                        if "TOO_LONG" in str(e_text2):
+                            clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:4000]
+                            try: await acc.send_message(chat_id=dest['dest_id'], text=clean_caption, reply_markup=msg.reply_markup, reply_to_message_id=dest.get('dest_thread'), disable_web_page_preview=True)
+                            except: pass
+        return True, "success"
 
-    # 🚀 FAST FORWARD EXACT CLONE WITH NEW SMART CAPTION
+    # 🚀 FAST FORWARD EXACT CLONE WITH CAPTION REPLACEMENT
     if not is_restricted and not getattr(msg, "has_protected_content", False) and not getattr(msg.chat, "has_protected_content", False):
         forward_success = False
         for dest in targets:
@@ -2400,7 +2422,14 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             try:
                 await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup)
                 forward_success = True
-            except Exception:
+            except Exception as e1:
+                if "CAPTION_TOO_LONG" in str(e1):
+                    try:
+                        fallback_cap = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
+                        await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=fallback_cap, reply_markup=msg.reply_markup)
+                        forward_success = True
+                        continue
+                    except: pass
                 try:
                     await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup)
                     forward_success = True
@@ -2409,9 +2438,17 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     await asyncio.sleep(e.value + 2)
                     await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup)
                     forward_success = True
-                except Exception as e:
-                    print(f"Task Fast-Copy blocked: {e}")
-        if forward_success: return True
+                except Exception as e2:
+                    if "CAPTION_TOO_LONG" in str(e2):
+                        try:
+                            fallback_cap = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
+                            await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=fallback_cap, reply_markup=msg.reply_markup)
+                            forward_success = True
+                        except:
+                            print(f"Task Fast-Copy blocked: {e2}")
+                    else:
+                        print(f"Task Fast-Copy blocked: {e2}")
+        if forward_success: return True, "success"
 
     # 🌟 DOWNLOAD TOGGLE SAFETY CHECK
     auto_dl = await db.get_dl_status()
@@ -2419,7 +2456,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
         if msg_type in ["Video", "Document"]:
             chat_title = getattr(msg.chat, "title", None) or str(chatid)
             await send_log(f"🚫 **File Skipped (Auto-Download OFF)**\n📂 **Source:** `{chat_title}` (`{chatid}`)\n🆔 **Msg ID:** `{msgid}`\n📄 **Type:** `{msg_type}`")
-        return False
+        return False, "dl_disabled"
 
     task_folder_path = Path(f"./downloads/{user_id}/{task_uuid}/{msgid}/")
     task_folder_path.mkdir(parents=True, exist_ok=True)
@@ -2443,10 +2480,10 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
 
     try: 
         for attempt in range(3):
-            if task_uuid and CANCEL_FLAGS.get(task_uuid): return False
+            if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
             try:
                 msg_fresh = await acc.get_messages(chatid, msgid)
-                if msg_fresh.empty: return False
+                if msg_fresh.empty: return False, "deleted"
                 
                 file_size = 0
                 if msg_fresh.document: file_size = msg_fresh.document.file_size
@@ -2489,6 +2526,8 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                                             await asyncio.sleep(e.value + 5)
                                         except Exception as e: 
                                             if "CANCELLED" in str(e): raise e
+                                            if "CAPTION_TOO_LONG" in str(e):
+                                                clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
                                             retry_part += 1
                                             await asyncio.sleep(3)
                                 try: os.remove(part)
@@ -2497,7 +2536,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     if up_task and not up_task.done(): up_task.cancel()
                     try: os.remove(file_path)
                     except: pass
-                    return True 
+                    return True, "success" 
                 else:
                     try:
                         file_path = await asyncio.wait_for(
@@ -2505,7 +2544,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                             timeout=1200
                         )
                     except asyncio.TimeoutError:
-                        return False
+                        return False, "failed"
                 
                 try:
                     thumb = None
@@ -2521,12 +2560,12 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 if e.value > 300: raise e
                 await asyncio.sleep(e.value + 5)
             except Exception as e:
-                if "CANCELLED" in str(e): return False
+                if "CANCELLED" in str(e): return False, "cancelled"
                 await asyncio.sleep(5)
 
         if down_task and not down_task.done(): down_task.cancel()
-        if not download_success: return False
-        if task_uuid and CANCEL_FLAGS.get(task_uuid): return False
+        if not download_success: return False, "failed"
+        if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
 
         if f"{chat_for_status}:{status_message.id}:up" in PROGRESS: del PROGRESS[f"{chat_for_status}:{status_message.id}:up"]
         up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text))
@@ -2558,6 +2597,8 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                             await asyncio.sleep(e.value + 5)
                         except Exception as e:
                             if "CANCELLED" in str(e): break
+                            if "CAPTION_TOO_LONG" in str(e):
+                                clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
                             retry_count += 1
                             await asyncio.sleep(3)
             return success_local
@@ -2568,7 +2609,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 upload_success = True
         
         if up_task and not up_task.done(): up_task.cancel()
-        return upload_success
+        return (True, "success") if upload_success else (False, "failed")
 
     finally:
         try: await asyncio.to_thread(shutil.rmtree, task_folder_path, ignore_errors=True)
@@ -2661,7 +2702,11 @@ async def process_watcher_message(client, message):
                             parse_mode=enums.ParseMode.HTML,
                             disable_web_page_preview=True
                         )
-                    except Exception: pass
+                    except Exception as e_text:
+                        if "TOO_LONG" in str(e_text):
+                            clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:4000]
+                            try: await client.send_message(chat_id=t['dest_id'], text=clean_caption, reply_markup=message.reply_markup, reply_to_message_id=t.get('dest_thread'), disable_web_page_preview=True)
+                            except: pass
                 return
 
             original_caption = ""
@@ -2682,7 +2727,14 @@ async def process_watcher_message(client, message):
                 try: 
                     await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=message.reply_markup)
                     success = True
-                except Exception as e1: 
+                except Exception as e1:
+                    if "CAPTION_TOO_LONG" in str(e1):
+                        try:
+                            fallback_cap = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
+                            await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=fallback_cap, reply_markup=message.reply_markup)
+                            success = True
+                            continue
+                        except: pass
                     try:
                         await client.get_chat(dest_id)
                     except Exception:
@@ -2692,6 +2744,13 @@ async def process_watcher_message(client, message):
                         await client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=message.reply_markup)
                         success = True
                     except Exception as e2:
+                        if "CAPTION_TOO_LONG" in str(e2):
+                            try:
+                                fallback_cap = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
+                                await client.copy_message(chat_id=dest_id, from_chat_id=chatid, message_id=message.id, reply_to_message_id=dest_thread, caption=fallback_cap, reply_markup=message.reply_markup)
+                                success = True
+                                continue
+                            except: pass
                         try:
                             await client.forward_messages(chat_id=dest_id, from_chat_id=chat_id, message_ids=message.id, message_thread_id=dest_thread)
                             success = True

@@ -123,7 +123,7 @@ POPULAR_AD_WORDS = [
     "Cinevood", "Vegamovies", "Bollyflix", "1XBET", "Melbet", 
     "Olamovies", "MoviesMod", "Khatrimaza", "9xmovies", "Desiremovies", 
     "HubFlix", "Bolly4u", "Bolly2tolly", "Filmyzilla", "Tamilrockers", 
-    "JioRockers", "Kuttymovies", "Moviesda"
+    "JioRockers", "Kuttymovies", "Moviesda", "LinkZz", "4kHdHub"
 ]
 
 # ==============================================================================

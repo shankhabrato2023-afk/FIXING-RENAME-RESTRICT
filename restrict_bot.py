@@ -123,7 +123,7 @@ POPULAR_AD_WORDS = [
     "Cinevood", "Vegamovies", "Bollyflix", "1XBET", "Melbet", 
     "Olamovies", "MoviesMod", "Khatrimaza", "9xmovies", "Desiremovies", 
     "HubFlix", "Bolly4u", "Bolly2tolly", "Filmyzilla", "Tamilrockers", 
-    "JioRockers", "Kuttymovies", "Moviesda", "4kHdHub"
+    "JioRockers", "Kuttymovies", "Moviesda"
 ]
 
 # ==============================================================================
@@ -480,72 +480,6 @@ def sanitize_filename(filename: str) -> str:
     if not ext:
         ext = ".dat"
     return f"{name}{ext}"
-
-# 🚀 BUG FIX: HIDDEN LINKS REMOVAL & CUSTOM REPLACE (Strictly respects format)
-def smart_caption(text_html, custom_replace=None):
-    if not text_html: return ""
-    if custom_replace is None: custom_replace = {}
-    
-    # 1. Replace all underscores with spaces
-    text_html = text_html.replace('_', ' ')
-    
-    # ✂️ REMOVE HIDDEN LINKS (Keeps Anchor Text Intact) AND RAW TELEGRAM LINKS
-    text_html = re.sub(r'<a\s+[^>]*>(.*?)</a>', r'\1', text_html, flags=re.IGNORECASE)
-    text_html = re.sub(r'https?://(?:t\.me|telegram\.me|telegram\.dog)[^\s]*', '', text_html, flags=re.IGNORECASE)
-    text_html = re.sub(r't\.me/[^\s]*', '', text_html, flags=re.IGNORECASE)
-    
-    # 2. Hardcoded & Custom Words Removal
-    for word in POPULAR_AD_WORDS:
-        text_html = re.sub(re.escape(word), "", text_html, flags=re.IGNORECASE)
-        
-    for find_w, rep_w in custom_replace.items():
-        text_html = re.sub(re.escape(find_w), rep_w, text_html, flags=re.IGNORECASE)
-        
-    # Clean up empty brackets and residual generic text left behind
-    text_html = re.sub(r'\[\s*\]|\(\s*\)', '', text_html)
-    text_html = re.sub(r'(?:Powered By|Uploaded By|Provided By)[\s:]*', '', text_html, flags=re.IGNORECASE)
-
-    # 3. Safely extract trailing extensions (.mkv, .mkv.001) preserving HTML tags
-    ext = ""
-    m_ext = re.search(r'(\.[a-zA-Z0-9]{2,5}(?:\.\d{3,4})?)(\s*(?:</[^>]+>)*\s*)$', text_html)
-    if m_ext:
-        ext = m_ext.group(1)
-        closing_tags = m_ext.group(2)
-        text_html = text_html[:m_ext.start(1)] + closing_tags
-        
-    # 4. Strip starting brackets/tags and starting @usernames recursively
-    while True:
-        old_text = text_html
-        text_html = re.sub(r'^((?:<[^>]+>)*\s*)@[a-zA-Z0-9_]+(\s*)', r'\1', text_html)
-        text_html = re.sub(r'^((?:<[^>]+>)*\s*)(?:\[.*?\]|\(.*?\))(\s*)', r'\1', text_html)
-        if old_text == text_html:
-            break
-            
-    # 5. Remove trailing @username at the very end of the text
-    text_html = re.sub(r'(@[a-zA-Z0-9_]+)(\s*(?:</[^>]+>)*\s*)$', r'\2', text_html)
-    
-    # 6. Add 720p safely if no quality tag exists
-    if not re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE):
-        m_tags = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
-        if m_tags:
-            text_html = text_html[:m_tags.start()] + " 720p" + m_tags.group(1)
-        else:
-            text_html += " 720p"
-
-    # 7. Re-attach extension
-    m_tags2 = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
-    if m_tags2:
-        text_html = text_html[:m_tags2.start()] + ext + m_tags2.group(1)
-    else:
-        text_html += ext
-        
-    # Clean double spaces
-    text_html = re.sub(r' {2,}', ' ', text_html)
-    
-    if len(text_html) > 1024:
-        text_html = text_html[:1024]
-        
-    return text_html.strip()
 
 async def check_link_restriction(user_id, link_text):
     clean_text = link_text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "")
@@ -1725,13 +1659,13 @@ async def format_start_cb(client, query):
     if user_id not in PENDING_TASKS: return await query.answer("Expired.", show_alert=True)
     
     await query.message.edit_text(
-        "📝 **Custom Replace / Remove**\n\n"
-        "Send the words you want to remove (comma separated).\n"
-        "Example: `Olamovies, Hdhub4u`\n\n"
-        "Send `/skip` if you don't want to add anything."
+        "📝 **Custom Replace / Remove Wizard**\n\n"
+        "Please provide the words you wish to **remove** (comma separated).\n"
+        "💡 *Example:* `Olamovies, Hdhub4u`\n\n"
+        "✨ *Send `/skip` if you prefer to keep the default settings.*"
     )
     
-    find_msg = await client.ask(query.message.chat.id, "Type words to remove/find (or /skip):", filters=filters.text, timeout=300)
+    find_msg = await client.ask(query.message.chat.id, "⌨️ **Type words to remove/find (or send `/skip`):**", filters=filters.text, timeout=300)
     if find_msg.text == '/cancel': return
     
     custom_replace = {}
@@ -1740,10 +1674,10 @@ async def format_start_cb(client, query):
         
         await find_msg.reply(
             "🔄 **Replace With?**\n\n"
-            "Send the replacement words in the same order (comma separated).\n\n"
-            "If you just want to DELETE them and put a space, simply send `0`."
+            "Provide the replacement words in the exact same sequence (comma separated).\n\n"
+            "🗑 *Tip: If you only want to DELETE them (replace with empty space), just send `0`.*"
         )
-        replace_msg = await client.ask(query.message.chat.id, "Type replacements (or send 0):", filters=filters.text, timeout=300)
+        replace_msg = await client.ask(query.message.chat.id, "⌨️ **Type replacements (or send `0`):**", filters=filters.text, timeout=300)
         if replace_msg.text == '/cancel': return
         
         if replace_msg.text.strip() == '0':
@@ -2339,22 +2273,20 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 "current_status_text": "Starting Batch..."
             })
 
-            status_text_header = f"**Batch Task Started!** 🚀\n"
-            if filter_thread_id:
-                status_text_header += f"**Filter:** `Topic {filter_thread_id} Only` 🎯\n"
-
             cancel_btn = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 Cancel Task", callback_data=f"ask_cancel:{task_uuid}")]])
 
             try:
+                initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
                 status_message = await client.send_message(
                     message.chat.id,
-                    f"⚡ **Initializing Task...**\n{status_text_header}\nSource: {source_title}\nTotal Files: {total_count}",
+                    initial_ui,
                     reply_markup=cancel_btn,
                     reply_to_message_id=message.id
                 )
                 task_info["status_msg_id"] = status_message.id
                 task_info["status_chat_id"] = status_message.chat.id
-            except: pass
+            except Exception as e:
+                pass
 
             last_update_time = time.time()
             inner_header = f"Filter: Topic {filter_thread_id} Only 🎯" if filter_thread_id else ""
@@ -2440,6 +2372,13 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                                 eta_sec = int(((total_count - task_info["fetched"]) / (task_info["fetched"] / elapsed)))
                                 eta_str = get_readable_time(eta_sec)
                             
+                        fresh_status_ui = generate_aesthetic_progress_ui(
+                            task_info, 
+                            current_status=f"Forwarding...\n║┣⪼⏳ ETA: {eta_str}", 
+                            percent=percent, 
+                            footer_status="FORWARDING"
+                        )
+                        
                         try:
                             active_chat = task_info.get("status_chat_id", message.chat.id)
                             active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
@@ -2449,10 +2388,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                                 except: pass
                                 new_msg = await client.send_message(
                                     message.chat.id,
-                                    f"{status_text_header}\n\n{generate_bar(percent)}\n\n"
-                                    f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
-                                    f"**Total:** {total_count}\n**Processed:** {index}\n"
-                                    f"**Success:** {success_count}\n**Failed:** {failed_count}\n**ETA:** {eta_str}",
+                                    fresh_status_ui,
                                     reply_markup=cancel_btn, 
                                     reply_to_message_id=message.id
                                 )
@@ -2463,10 +2399,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                                 await client.edit_message_text(
                                     chat_id=active_chat,
                                     message_id=active_msg_id,
-                                    text=f"{status_text_header}\n\n{generate_bar(percent)}\n\n"
-                                         f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
-                                         f"**Total:** {total_count}\n**Processed:** {index}\n"
-                                         f"**Success:** {success_count}\n**Failed:** {failed_count}\n**ETA:** {eta_str}",
+                                    text=fresh_status_ui,
                                     reply_markup=cancel_btn
                                 )
                             last_update_time = current_now
@@ -2477,15 +2410,31 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
         finally:
             if 'was_cancelled' in locals() and was_cancelled:
+                footer_tag = "ᴄᴀɴᴄᴇʟʟᴇᴅ"
+                status_word = "Cancelled"
                 header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
             else:
+                footer_tag = "ᴄᴏᴍᴘʟᴇᴛᴇᴅ"
+                status_word = "Completed"
                 header = f"Batch was Completed! ✅ {user_mention} ✨"
 
             try:
+                tot = task_info.get("total", 1)
+                if tot == 0: tot = 1
+                fet = task_info.get("fetched", 0)
+                final_percent = (fet / tot * 100.0) if tot > 0 else 0.0
+                if final_percent > 100.0: final_percent = 100.0
+                
+                final_status_ui = generate_aesthetic_progress_ui(
+                    task_info,
+                    current_status=status_word,
+                    percent=final_percent,
+                    footer_status=footer_tag
+                )
                 active_chat = task_info.get("status_chat_id", message.chat.id)
                 active_msg_id = task_info.get("status_msg_id", status_message.id if status_message else 0)
                 if active_msg_id:
-                    await client.delete_messages(active_chat, active_msg_id)
+                    await client.edit_message_text(chat_id=active_chat, message_id=active_msg_id, text=final_status_ui)
             except Exception: pass
 
             if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):
@@ -2592,7 +2541,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             
         # Clean empty brackets and generic texts
         text_html = re.sub(r'\[\s*\]|\(\s*\)', '', text_html)
-        text_html = re.sub(r'(?:Powered By|Uploaded By|Provided By)[\s:]*', '', text_html, flags=re.IGNORECASE)
 
         # 4. Safely extract trailing extensions (.mkv, .mkv.001) preserving HTML tags
         ext = ""
@@ -2733,7 +2681,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     file_path_to_save = task_folder_path / safe_filename
 
     chat_for_status = status_message.chat.id if status_message else message.chat.id
-    down_task = asyncio.create_task(downstatus(client, status_message, chat_for_status, index, total_count, header_text))
+    down_task = asyncio.create_task(downstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
     file_path = None
     ph_path = None
     download_success = False
@@ -2750,12 +2698,12 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 file_size = getattr(msg_fresh.document, "file_size", 0) or getattr(msg_fresh.video, "file_size", 0) or getattr(msg_fresh.audio, "file_size", 0)
 
                 if file_size > split_limit:
-                    file_path = await acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
+                    file_path = await acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[task_uuid, "down"])
                     
                     if down_task and not down_task.done(): down_task.cancel()
                     parts = await split_file_python(file_path, chunk_size=1900*1024*1024)
                     
-                    up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text))
+                    up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
                     
                     async with USER_SEMAPHORES[user_id]:
                         async with SERVER_UPLOAD_LIMIT:
@@ -2767,16 +2715,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                                     retry_part = 0
                                     while retry_part < 5: 
                                         try:
-                                            # 🚀 EXACT CAPTION CLONE FOR SPLIT FILES
-                                            await client.send_document(
-                                                dest_chat_id, 
-                                                str(part), 
-                                                caption=clean_caption, 
-                                                parse_mode=enums.ParseMode.HTML,
-                                                reply_to_message_id=dest_thread_id,
-                                                progress=progress, 
-                                                progress_args=[status_message, "up", task_uuid]
-                                            )
+                                            await client.send_document(dest_chat_id, str(part), caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
                                             break
                                         except FloodWait as e: 
                                             await asyncio.sleep(e.value + 5)
@@ -2794,7 +2733,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 else:
                     try:
                         file_path = await asyncio.wait_for(
-                            acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid]),
+                            acc.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[task_uuid, "down"]),
                             timeout=1200
                         )
                     except asyncio.TimeoutError:
@@ -2820,7 +2759,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
         if not download_success: return False, "failed"
         if task_uuid and CANCEL_FLAGS.get(task_uuid): return False, "cancelled"
 
-        up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text))
+        up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
         
         uploader = client 
         upload_success = False
@@ -2835,12 +2774,11 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     while retry_count < 5: 
                         if task_uuid and CANCEL_FLAGS.get(task_uuid): break
                         try:
-                            # 🚀 EXACT UPLOAD CLONE WITH CLEAN CAPTION (No Buttons)
-                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
-                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
-                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
+                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
                             elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
-                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[status_message,"up", task_uuid])
+                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
                             elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
                             elif "Sticker" == msg_type: await uploader.send_sticker(dest_chat_id, file_path, reply_to_message_id=dest_thread_id)
                             success_local = True
@@ -2849,8 +2787,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                             await asyncio.sleep(e.value + 5)
                         except Exception as e:
                             if "CANCELLED" in str(e): break
-                            if "CAPTION_TOO_LONG" in str(e):
-                                clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
                             retry_count += 1
                             await asyncio.sleep(3)
             return success_local
@@ -2955,7 +2891,6 @@ async def process_watcher_message(client, message):
                     text_html = re.sub(re.escape(find_w), rep_w, text_html, flags=re.IGNORECASE)
                     
                 text_html = re.sub(r'\[\s*\]|\(\s*\)', '', text_html)
-                text_html = re.sub(r'(?:Powered By|Uploaded By|Provided By)[\s:]*', '', text_html, flags=re.IGNORECASE)
 
                 ext = ""
                 m_ext = re.search(r'(\.[a-zA-Z0-9]{2,5}(?:\.\d{3,4})?)(\s*(?:</[^>]+>)*\s*)$', text_html)

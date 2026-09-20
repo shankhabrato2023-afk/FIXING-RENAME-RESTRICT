@@ -470,12 +470,17 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
-# 🚀 SMART CAPTION LOGIC
+# 🚀 SMART CAPTION LOGIC (Strictly follows user rules)
 def smart_caption(text_html):
     if not text_html: return ""
     
     # 1. Replace all underscores with spaces
     text_html = text_html.replace('_', ' ')
+    
+    # ✂️ REMOVE HIDDEN LINKS AND RAW TELEGRAM LINKS (Keeps Anchor Text Intact)
+    text_html = re.sub(r'<a\s+[^>]*>(.*?)</a>', r'\1', text_html, flags=re.IGNORECASE)
+    text_html = re.sub(r'https?://(?:t\.me|telegram\.me|telegram\.dog)[^\s]*', '', text_html, flags=re.IGNORECASE)
+    text_html = re.sub(r't\.me/[^\s]*', '', text_html, flags=re.IGNORECASE)
     
     # 2. Safely extract trailing extensions (.mkv, .mkv.001) preserving HTML tags
     ext = ""
@@ -514,6 +519,7 @@ def smart_caption(text_html):
     # Clean double spaces
     text_html = re.sub(r' {2,}', ' ', text_html)
     
+    # PREVENT CAPTION TOO LONG ERROR
     if len(text_html) > 1024:
         pass
         
@@ -548,7 +554,7 @@ async def check_link_restriction(user_id, link_text):
     except Exception as e:
         return None, f"⚠️ **Could not analyze link.** Error: {e}"
 
-    is_temp_client = app 
+    is_temp_client = False
     check_client = app 
     
     if is_private:
@@ -701,12 +707,12 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
         if rec["current"] == rec["total"] and rec["total"] > 0:
             break
             
-        percent = rec.get("percent", 0)
-        speed_str = f"{_pretty_bytes(rec.get('speed', 0))}/s"
+        speed = f"{_pretty_bytes(rec.get('speed', 0))}/s"
         size_str = f"{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}"
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
-
-        current_action = f"📥 Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed_str}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
+        percent = rec.get("percent", 0)
+        
+        current_action = f"📥 Downloading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "DOWNLOADING")
 
         if not task_info.get("confirming_cancel"):
@@ -748,12 +754,12 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
         if rec["current"] == rec["total"] and rec["total"] > 0:
             break
             
-        percent = rec.get("percent", 0)
-        speed_str = f"{_pretty_bytes(rec.get('speed', 0))}/s"
+        speed = f"{_pretty_bytes(rec.get('speed', 0))}/s"
         size_str = f"{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}"
         eta_str = get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)
-
-        current_action = f"📤 Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed_str}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
+        percent = rec.get("percent", 0)
+        
+        current_action = f"📤 Uploading ({percent:.1f}%)\n║┣⪼🚀 Sᴘᴇᴇᴅ: {speed}\n║┣⪼💾 Sɪᴢᴇ: {size_str}\n║┣⪼⏳ ETA: {eta_str}"
         status_text = generate_aesthetic_progress_ui(task_info, current_action, percent, "UPLOADING")
 
         if not task_info.get("confirming_cancel"):
@@ -2340,9 +2346,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 elif status_reason == "cancelled": was_cancelled = True; break
                 else: task_info["failed"] += 1
 
-                if is_success: success_count += 1
-                else: failed_count += 1
-
                 if index < total_count:
                     if is_success:
                         elapsed_time = time.time() - loop_start_time
@@ -2357,11 +2360,11 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 if not was_cancelled and is_success: 
                     await db.save_sync_progress(user_id, chatid_check, primary_dest, msgid)
 
+                current_now = time.time()
                 needs_refresh = task_info.get("needs_refresh", False)
                 force_update = task_info.get("force_update_ui", False)
                 
                 if not task_info.get("confirming_cancel"):
-                    current_now = time.time()
                     if (task_info["fetched"] % 20 == 0) or msgid == toID or needs_refresh or force_update:
                         task_info["force_update_ui"] = False
                         percent = (task_info["fetched"] / total_count) * 100.0 if total_count > 0 else 0.0
@@ -2516,6 +2519,60 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
         elif msg_type == "Voice": original_caption = f"{msgid}.ogg"
 
     # 🚀 SAFE SMART CAPTION CLONER (Direct HTML edit, completely safe for formatting)
+    def smart_caption(text_html):
+        if not text_html: return ""
+        
+        # 1. Replace all underscores with spaces
+        text_html = text_html.replace('_', ' ')
+        
+        # ✂️ REMOVE HIDDEN LINKS AND TELEGRAM LINKS
+        text_html = re.sub(r'<a\s+[^>]*>(.*?)</a>', r'\1', text_html, flags=re.IGNORECASE)
+        text_html = re.sub(r'https?://(?:t\.me|telegram\.me|telegram\.dog)[^\s]*', '', text_html, flags=re.IGNORECASE)
+        text_html = re.sub(r't\.me/[^\s]*', '', text_html, flags=re.IGNORECASE)
+        
+        # 2. Safely extract trailing extensions (.mkv, .mkv.001) preserving HTML tags
+        ext = ""
+        m_ext = re.search(r'(\.[a-zA-Z0-9]{2,5}(?:\.\d{3,4})?)(\s*(?:</[^>]+>)*\s*)$', text_html)
+        if m_ext:
+            ext = m_ext.group(1)
+            closing_tags = m_ext.group(2)
+            text_html = text_html[:m_ext.start(1)] + closing_tags
+            
+        # 3. Strip starting brackets/tags and starting @usernames recursively
+        while True:
+            old_text = text_html
+            text_html = re.sub(r'^((?:<[^>]+>)*\s*)@[a-zA-Z0-9_]+(\s*)', r'\1', text_html)
+            text_html = re.sub(r'^((?:<[^>]+>)*\s*)(?:\[.*?\]|\(.*?\))(\s*)', r'\1', text_html)
+            if old_text == text_html:
+                break
+                
+        # 4. Remove trailing @username at the very end of the text
+        text_html = re.sub(r'(@[a-zA-Z0-9_]+)(\s*(?:</[^>]+>)*\s*)$', r'\2', text_html)
+        
+        # 5. Add 720p safely if no quality tag exists
+        if not re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE):
+            m_tags = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
+            if m_tags:
+                text_html = text_html[:m_tags.start()] + " 720p" + m_tags.group(1)
+            else:
+                text_html += " 720p"
+
+        # 6. Re-attach extension
+        m_tags2 = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
+        if m_tags2:
+            text_html = text_html[:m_tags2.start()] + ext + m_tags2.group(1)
+        else:
+            text_html += ext
+            
+        # Clean double spaces
+        text_html = re.sub(r' {2,}', ' ', text_html)
+        
+        # PREVENT CAPTION TOO LONG ERROR
+        if len(text_html) > 1024:
+            pass
+            
+        return text_html.strip()
+
     clean_caption = smart_caption(original_caption)
 
     if text_format:
@@ -2531,7 +2588,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 await client.send_message(
                     chat_id=dest['dest_id'], 
                     text=clean_caption,
-                    reply_markup=msg.reply_markup,
                     reply_to_message_id=dest.get('dest_thread'),
                     parse_mode=enums.ParseMode.HTML,
                     disable_web_page_preview=True
@@ -2539,14 +2595,13 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             except Exception as e_text:
                 if "TOO_LONG" in str(e_text):
                     clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:4000]
-                    try: await client.send_message(chat_id=dest['dest_id'], text=clean_caption, reply_markup=msg.reply_markup, reply_to_message_id=dest.get('dest_thread'), disable_web_page_preview=True)
+                    try: await client.send_message(chat_id=dest['dest_id'], text=clean_caption, reply_to_message_id=dest.get('dest_thread'), disable_web_page_preview=True)
                     except: pass
                 else:
                     try:
                         await acc.send_message(
                             chat_id=dest['dest_id'], 
                             text=clean_caption,
-                            reply_markup=msg.reply_markup,
                             reply_to_message_id=dest.get('dest_thread'),
                             parse_mode=enums.ParseMode.HTML,
                             disable_web_page_preview=True
@@ -2554,7 +2609,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     except Exception as e_text2:
                         if "TOO_LONG" in str(e_text2):
                             clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:4000]
-                            try: await acc.send_message(chat_id=dest['dest_id'], text=clean_caption, reply_markup=msg.reply_markup, reply_to_message_id=dest.get('dest_thread'), disable_web_page_preview=True)
+                            try: await acc.send_message(chat_id=dest['dest_id'], text=clean_caption, reply_to_message_id=dest.get('dest_thread'), disable_web_page_preview=True)
                             except: pass
         return True, "success"
 
@@ -2565,28 +2620,28 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             dest_chat_id = dest['dest_id']
             dest_thread_id = dest.get('dest_thread')
             try:
-                await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup)
+                await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
                 forward_success = True
             except Exception as e1:
                 if "CAPTION_TOO_LONG" in str(e1):
                     try:
                         fallback_cap = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
-                        await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=fallback_cap, reply_markup=msg.reply_markup)
+                        await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=fallback_cap)
                         forward_success = True
                         continue
                     except: pass
                 try:
-                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup)
+                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
                     forward_success = True
                 except FloodWait as e:
                     await asyncio.sleep(e.value + 5)
-                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup)
+                    await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
                     forward_success = True
                 except Exception as e2:
                     if "CAPTION_TOO_LONG" in str(e2):
                         try:
                             fallback_cap = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
-                            await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=fallback_cap, reply_markup=msg.reply_markup)
+                            await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, reply_to_message_id=dest_thread_id, caption=fallback_cap)
                             forward_success = True
                         except:
                             print(f"Task Fast-Copy blocked: {e2}")
@@ -2605,7 +2660,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     task_folder_path = Path(f"./downloads/{user_id}/{task_uuid}/{msgid}/")
     task_folder_path.mkdir(parents=True, exist_ok=True)
 
-    # 🚀 RETAIN ORIGINAL FILE NAME ON DISK (File name downloading doesn't break formatting)
+    # 🚀 RETAIN ORIGINAL FILE NAME ON DISK
     original_filename = "unknown_file"
     if getattr(msg, "document", None) and getattr(msg.document, "file_name", None): original_filename = msg.document.file_name
     elif getattr(msg, "video", None) and getattr(msg.video, "file_name", None): original_filename = msg.video.file_name
@@ -2649,14 +2704,12 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                                     retry_part = 0
                                     while retry_part < 5: 
                                         try:
-                                            await client.send_document(dest_chat_id, str(part), caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
+                                            await client.send_document(dest_chat_id, str(part), caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
                                             break
                                         except FloodWait as e: 
                                             await asyncio.sleep(e.value + 5)
                                         except Exception as e: 
                                             if "CANCELLED" in str(e): raise e
-                                            if "CAPTION_TOO_LONG" in str(e):
-                                                clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
                                             retry_part += 1
                                             await asyncio.sleep(3)
                                 try: os.remove(part)
@@ -2686,6 +2739,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 download_success = True
                 break
             except FloodWait as e: 
+                if e.value > 300: raise e
                 await asyncio.sleep(e.value + 5)
             except Exception as e:
                 if "CANCELLED" in str(e): return False, "cancelled"
@@ -2710,22 +2764,19 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     while retry_count < 5: 
                         if task_uuid and CANCEL_FLAGS.get(task_uuid): break
                         try:
-                            # 🚀 EXACT UPLOAD CLONE WITH CLEAN CAPTION
-                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id)
-                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id)
-                            elif "Sticker" == msg_type: await uploader.send_sticker(dest_chat_id, file_path, reply_markup=msg.reply_markup, reply_to_message_id=dest_thread_id)
+                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
+                            elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
+                            elif "Sticker" == msg_type: await uploader.send_sticker(dest_chat_id, file_path, reply_to_message_id=dest_thread_id)
                             success_local = True
                             break 
                         except FloodWait as e:
                             await asyncio.sleep(e.value + 5)
                         except Exception as e:
                             if "CANCELLED" in str(e): break
-                            if "CAPTION_TOO_LONG" in str(e):
-                                clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
                             retry_count += 1
                             await asyncio.sleep(3)
             return success_local
@@ -2819,7 +2870,37 @@ async def process_watcher_message(client, message):
             # 🚀 EXACT TEXT WATCHER CLONE WITH CLEAN TEXT
             if msg_type == "Text":
                 original_caption = message.text.html if message.text else ""
-                clean_caption = smart_caption(original_caption)
+                
+                # Inline Logic for Watchers
+                def smart_caption_inline(text_html):
+                    if not text_html: return ""
+                    text_html = text_html.replace('_', ' ')
+                    text_html = re.sub(r'<a\s+[^>]*>(.*?)</a>', r'\1', text_html, flags=re.IGNORECASE)
+                    text_html = re.sub(r'https?://(?:t\.me|telegram\.me|telegram\.dog)[^\s]*', '', text_html, flags=re.IGNORECASE)
+                    text_html = re.sub(r't\.me/[^\s]*', '', text_html, flags=re.IGNORECASE)
+                    ext = ""
+                    m_ext = re.search(r'(\.[a-zA-Z0-9]{2,5}(?:\.\d{3,4})?)(\s*(?:</[^>]+>)*\s*)$', text_html)
+                    if m_ext:
+                        ext = m_ext.group(1)
+                        closing_tags = m_ext.group(2)
+                        text_html = text_html[:m_ext.start(1)] + closing_tags
+                    while True:
+                        old_text = text_html
+                        text_html = re.sub(r'^((?:<[^>]+>)*\s*)@[a-zA-Z0-9_]+(\s*)', r'\1', text_html)
+                        text_html = re.sub(r'^((?:<[^>]+>)*\s*)(?:\[.*?\]|\(.*?\))(\s*)', r'\1', text_html)
+                        if old_text == text_html: break
+                    text_html = re.sub(r'(@[a-zA-Z0-9_]+)(\s*(?:</[^>]+>)*\s*)$', r'\2', text_html)
+                    if not re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE):
+                        m_tags = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
+                        if m_tags: text_html = text_html[:m_tags.start()] + " 720p" + m_tags.group(1)
+                        else: text_html += " 720p"
+                    m_tags2 = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
+                    if m_tags2: text_html = text_html[:m_tags2.start()] + ext + m_tags2.group(1)
+                    else: text_html += ext
+                    text_html = re.sub(r' {2,}', ' ', text_html)
+                    return text_html.strip()
+                    
+                clean_caption = smart_caption_inline(original_caption)
                 if text_format:
                     if "Bold" in text_format: clean_caption = f"<b>{clean_caption}</b>"
                     if "Italic" in text_format: clean_caption = f"<i>{clean_caption}</i>"
@@ -2828,7 +2909,6 @@ async def process_watcher_message(client, message):
                         await client.send_message(
                             chat_id=t['dest_id'], 
                             text=clean_caption,
-                            reply_markup=message.reply_markup,
                             reply_to_message_id=t.get('dest_thread'),
                             parse_mode=enums.ParseMode.HTML,
                             disable_web_page_preview=True
@@ -2836,7 +2916,7 @@ async def process_watcher_message(client, message):
                     except Exception as e_text:
                         if "TOO_LONG" in str(e_text):
                             clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:4000]
-                            try: await client.send_message(chat_id=t['dest_id'], text=clean_caption, reply_markup=message.reply_markup, reply_to_message_id=t.get('dest_thread'), disable_web_page_preview=True)
+                            try: await client.send_message(chat_id=t['dest_id'], text=clean_caption, reply_to_message_id=t.get('dest_thread'), disable_web_page_preview=True)
                             except: pass
                 return
 
@@ -2847,7 +2927,36 @@ async def process_watcher_message(client, message):
                 if getattr(message, "document", None) and getattr(message.document, "file_name", None): original_caption = message.document.file_name
                 elif getattr(message, "video", None) and getattr(message.video, "file_name", None): original_caption = message.video.file_name
                 elif getattr(message, "audio", None) and getattr(message.audio, "file_name", None): original_caption = message.audio.file_name
-            clean_caption = smart_caption(original_caption)
+                
+            def smart_caption_inline2(text_html):
+                if not text_html: return ""
+                text_html = text_html.replace('_', ' ')
+                text_html = re.sub(r'<a\s+[^>]*>(.*?)</a>', r'\1', text_html, flags=re.IGNORECASE)
+                text_html = re.sub(r'https?://(?:t\.me|telegram\.me|telegram\.dog)[^\s]*', '', text_html, flags=re.IGNORECASE)
+                text_html = re.sub(r't\.me/[^\s]*', '', text_html, flags=re.IGNORECASE)
+                ext = ""
+                m_ext = re.search(r'(\.[a-zA-Z0-9]{2,5}(?:\.\d{3,4})?)(\s*(?:</[^>]+>)*\s*)$', text_html)
+                if m_ext:
+                    ext = m_ext.group(1)
+                    closing_tags = m_ext.group(2)
+                    text_html = text_html[:m_ext.start(1)] + closing_tags
+                while True:
+                    old_text = text_html
+                    text_html = re.sub(r'^((?:<[^>]+>)*\s*)@[a-zA-Z0-9_]+(\s*)', r'\1', text_html)
+                    text_html = re.sub(r'^((?:<[^>]+>)*\s*)(?:\[.*?\]|\(.*?\))(\s*)', r'\1', text_html)
+                    if old_text == text_html: break
+                text_html = re.sub(r'(@[a-zA-Z0-9_]+)(\s*(?:</[^>]+>)*\s*)$', r'\2', text_html)
+                if not re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE):
+                    m_tags = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
+                    if m_tags: text_html = text_html[:m_tags.start()] + " 720p" + m_tags.group(1)
+                    else: text_html += " 720p"
+                m_tags2 = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
+                if m_tags2: text_html = text_html[:m_tags2.start()] + ext + m_tags2.group(1)
+                else: text_html += ext
+                text_html = re.sub(r' {2,}', ' ', text_html)
+                return text_html.strip()
+                
+            clean_caption = smart_caption_inline2(original_caption)
 
             if text_format:
                 if "Bold" in text_format: clean_caption = f"<b>{clean_caption}</b>"
@@ -2860,13 +2969,13 @@ async def process_watcher_message(client, message):
                 
                 # 🚀 EXACT MEDIA WATCHER FAST FORWARD CLONE
                 try: 
-                    await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=message.reply_markup)
+                    await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
                     success = True
                 except Exception as e1:
                     if "CAPTION_TOO_LONG" in str(e1):
                         try:
                             fallback_cap = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
-                            await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=fallback_cap, reply_markup=message.reply_markup)
+                            await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=fallback_cap)
                             success = True
                             continue
                         except: pass
@@ -2876,13 +2985,13 @@ async def process_watcher_message(client, message):
                         pass
 
                     try: 
-                        await client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=message.reply_markup)
+                        await client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML)
                         success = True
                     except Exception as e2:
                         if "CAPTION_TOO_LONG" in str(e2):
                             try:
                                 fallback_cap = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
-                                await client.copy_message(chat_id=dest_id, from_chat_id=chatid, message_id=message.id, reply_to_message_id=dest_thread, caption=fallback_cap, reply_markup=message.reply_markup)
+                                await client.copy_message(chat_id=dest_id, from_chat_id=chatid, message_id=message.id, reply_to_message_id=dest_thread, caption=fallback_cap)
                                 success = True
                                 continue
                             except: pass

@@ -337,23 +337,17 @@ async def custom_ask(self, chat_id: int, text: str, filters=None, timeout: int =
 
 Client.ask = custom_ask
 
-# Inline Skip button handler for ask
 class MockSkipMessage:
-    def __init__(self, text, chat, client):
+    def __init__(self, text):
         self.text = text
-        self.chat = chat
-        self._client = client
-    async def reply(self, reply_text, *args, **kw):
-        return await self._client.send_message(self.chat.id, reply_text, *args, **kw)
 
 @app.on_callback_query(filters.regex("^ask_skip$"))
 async def ask_skip_cb(client, query):
     chat_id = query.message.chat.id
     if chat_id in ASK_FUTURES:
         future, _ = ASK_FUTURES.pop(chat_id)
-        mock_msg = MockSkipMessage("/skip", query.message.chat, client)
         if not future.done():
-            future.set_result(mock_msg)
+            future.set_result(MockSkipMessage("/skip"))
     try: await query.message.delete()
     except: pass
     await query.answer("Skipped!")
@@ -478,7 +472,7 @@ def generate_aesthetic_progress_ui(task_info: dict, current_status: str = "Forwa
         f"║┃\n"
         f"║┣⪼🔁 Fɪʟᴛᴇʀᴇᴅ Msɢ : {filtered}\n"
         f"║┃\n"
-        f"║┣⪼📊 Cᴜʀʀᴇɴᴛ Sᴛᴀᴛᴜs: {current_status}\n"
+        f"║┣⪼📊 Cᴜʀʀᴇɴᴛ Sᴛᴀᴛᴜs: \n║┣⪼ {current_status}\n"
         f"║┃\n"
         f"║┣⪼🔁 Source: {source_title}\n"
         f"║┃\n"
@@ -1679,27 +1673,35 @@ async def format_start_cb(client, query):
     user_id = query.from_user.id
     if user_id not in PENDING_TASKS: return await query.answer("Expired.", show_alert=True)
     
-    await query.message.edit_text(
-        "📝 **Custom Replace / Remove Wizard**\n\n"
-        "Send the words you want to remove (comma separated).\n"
-        "💡 *Example:* `Olamovies, Hdhub4u`\n\n"
-        "✨ *Click the Skip button or send `/skip` if you prefer to keep the default settings.*",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data="ask_skip")]])
-    )
+    try: await query.message.edit_reply_markup(None) 
+    except: pass
     
-    find_msg = await client.ask(query.message.chat.id, "⌨️ **Type words to remove/find (or send `/skip`):**", filters=filters.text, timeout=300)
+    kb = InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data="ask_skip")]])
+    
+    find_msg = await client.ask(
+        query.message.chat.id, 
+        "📝 **Custom Replace / Remove Wizard**\n\n"
+        "Provide the words you wish to **remove** (comma separated).\n"
+        "💡 *Example:* `Olamovies, Hdhub4u`\n\n"
+        "✨ *Click Skip if you prefer to keep the default settings.*", 
+        filters=filters.text, 
+        reply_markup=kb,
+        timeout=300
+    )
     if find_msg.text == '/cancel': return
     
     custom_replace = {}
-    if find_msg.text.strip().lower() != '/skip':
+    if find_msg.text.strip().lower() not in ['/skip', 'skip']:
         find_words = [w.strip() for w in find_msg.text.split(',')]
         
-        await find_msg.reply(
+        replace_msg = await client.ask(
+            query.message.chat.id, 
             "🔄 **Replace With?**\n\n"
             "Provide the replacement words in the exact same sequence (comma separated).\n\n"
-            "🗑 *Tip: If you only want to DELETE them (replace with empty space), just send `0`.*"
+            "🗑 *Tip: If you only want to DELETE them (replace with empty space), just send `0`.*", 
+            filters=filters.text, 
+            timeout=300
         )
-        replace_msg = await client.ask(query.message.chat.id, "⌨️ **Type replacements (or send `0`):**", filters=filters.text, timeout=300)
         if replace_msg.text == '/cancel': return
         
         if replace_msg.text.strip() == '0':
@@ -1712,7 +1714,7 @@ async def format_start_cb(client, query):
                 
     PENDING_TASKS[user_id]["custom_replace"] = custom_replace
     
-    await show_filter_menu(find_msg if find_msg.text.strip().lower() != '/skip' else query, user_id)
+    await show_filter_menu(find_msg if find_msg.text.strip().lower() not in ['/skip', 'skip'] else query, user_id)
 # ======================================
 # --- NAYA FORMAT MENU LOGIC END ---
 # ======================================
@@ -2448,7 +2450,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 status_word = "Cancelled"
                 header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
             else:
-                footer_tag = "ᴄᴏᴍPLᴇᴛᴇᴅ"
+                footer_tag = "ᴄᴏᴍᴘʟᴇᴛᴇᴅ"
                 status_word = "Completed"
                 header = f"Batch was Completed! ✅ {user_mention} ✨"
 
@@ -2571,6 +2573,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             
         text_html = re.sub(r'\[\s*\]|\(\s*\)', '', text_html)
 
+        ext_pattern = re.compile(r'(\s|\.)(mkv|mp4|avi|avc|hevc|webm|m4v|ts)(\s*\.\d{1,4}|\s*\.part\d{1,4})?(?=\s|$|\n|<|\[|\()', re.IGNORECASE)
         has_quality = bool(re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE))
         
         def ext_replacer(match):
@@ -2583,13 +2586,13 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             res += f".{codec}{split_part}"
             return res
             
-        ext_pattern = re.compile(r'(\.)?(mkv|mp4|avi|avc|hevc|webm|m4v|ts)(\s*\.\d{1,4}|\s*\.part\d{1,4})?(?=\s|$|\n|<|\[|\()', re.IGNORECASE)
         text_html = ext_pattern.sub(ext_replacer, text_html, count=1)
 
         if not has_quality and not ext_pattern.search(text_html):
             if '\n' in text_html:
-                parts = text_html.rsplit('\n', 1)
-                text_html = parts[0].rstrip() + " 720p\n" + parts[1]
+                parts = text_html.split('\n', 1)
+                parts[0] = parts[0].rstrip() + " 720p"
+                text_html = '\n'.join(parts)
             else:
                 text_html = text_html.rstrip() + " 720p"
 
@@ -2730,10 +2733,19 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                         if getattr(msg_fresh, "document", None) and msg_fresh.document.thumbs: thumb = msg_fresh.document.thumbs[0]
                         elif getattr(msg_fresh, "video", None) and msg_fresh.video.thumbs: thumb = msg_fresh.video.thumbs[0]
                         elif getattr(msg_fresh, "audio", None) and msg_fresh.audio.thumbs: thumb = msg_fresh.audio.thumbs[0]
-                        if thumb: ph_path = await acc.download_media(thumb.file_id, file_name=str(task_folder_path / "thumb.jpg"))
+                        if thumb and hasattr(thumb, 'file_id'): 
+                            ph_path = await acc.download_media(thumb.file_id, file_name=str(task_folder_path / "thumb.jpg"))
                     except: pass
                     
                     if ph_path and not os.path.exists(ph_path): ph_path = None
+
+                    # 🎬 FFMPEG Fallback for missing thumbs
+                    if not ph_path and file_path and str(file_path).lower().endswith(('.mp4', '.mkv', '.avi', '.webm')):
+                        try:
+                            temp_ph_path = str(task_folder_path / "thumb.jpg")
+                            subprocess.run(["ffmpeg", "-ss", "00:00:05", "-i", str(file_path), "-vframes", "1", "-q:v", "2", temp_ph_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            if os.path.exists(temp_ph_path): ph_path = temp_ph_path
+                        except: pass
 
                     up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
                     
@@ -2787,10 +2799,18 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     if getattr(msg_fresh, "document", None) and msg_fresh.document.thumbs: thumb = msg_fresh.document.thumbs[0]
                     elif getattr(msg_fresh, "video", None) and msg_fresh.video.thumbs: thumb = msg_fresh.video.thumbs[0]
                     elif getattr(msg_fresh, "audio", None) and msg_fresh.audio.thumbs: thumb = msg_fresh.audio.thumbs[0]
-                    if thumb: ph_path = await acc.download_media(thumb.file_id, file_name=str(task_folder_path / "thumb.jpg"))
+                    if thumb and hasattr(thumb, 'file_id'): 
+                        ph_path = await acc.download_media(thumb.file_id, file_name=str(task_folder_path / "thumb.jpg"))
                 except: pass
                 
                 if ph_path and not os.path.exists(ph_path): ph_path = None
+
+                if not ph_path and file_path and str(file_path).lower().endswith(('.mp4', '.mkv', '.avi', '.webm')):
+                    try:
+                        temp_ph_path = str(task_folder_path / "thumb.jpg")
+                        subprocess.run(["ffmpeg", "-ss", "00:00:05", "-i", str(file_path), "-vframes", "1", "-q:v", "2", temp_ph_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        if os.path.exists(temp_ph_path): ph_path = temp_ph_path
+                    except: pass
 
                 download_success = True
                 break
@@ -2939,7 +2959,7 @@ async def process_watcher_message(client, message):
                     
                 text_html = re.sub(r'\[\s*\]|\(\s*\)', '', text_html)
 
-                ext_pattern = re.compile(r'\.?(mkv|mp4|avi|avc|hevc|webm|m4v|ts)(\s*\.\d{1,4}|\s*\.part\d{1,4})?(?=\s|$|\n|<|\[|\()', re.IGNORECASE)
+                ext_pattern = re.compile(r'(\s|\.)(mkv|mp4|avi|avc|hevc|webm|m4v|ts)(\s*\.\d{1,4}|\s*\.part\d{1,4})?(?=\s|$|\n|<|\[|\()', re.IGNORECASE)
                 has_quality = bool(re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE))
                 
                 def ext_replacer(match):
@@ -2957,7 +2977,8 @@ async def process_watcher_message(client, message):
                 if not has_quality and not ext_pattern.search(text_html):
                     if '\n' in text_html:
                         parts = text_html.rsplit('\n', 1)
-                        text_html = parts[0].rstrip() + " 720p\n" + parts[1]
+                        parts[0] = parts[0].rstrip() + " 720p"
+                        text_html = '\n'.join(parts)
                     else:
                         text_html = text_html.rstrip() + " 720p"
 
@@ -3019,7 +3040,7 @@ async def process_watcher_message(client, message):
                     if "CAPTION_TOO_LONG" in str(e1):
                         try:
                             fallback_cap = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
-                            await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=fallback_cap, reply_markup=None)
+                            await app.copy_message(chat_id=dest_chat_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=fallback_cap, reply_markup=None)
                             success = True
                             continue
                         except: pass

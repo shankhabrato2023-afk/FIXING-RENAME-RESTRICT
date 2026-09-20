@@ -1660,12 +1660,12 @@ async def format_start_cb(client, query):
     
     await query.message.edit_text(
         "📝 **Custom Replace / Remove Wizard**\n\n"
-        "Please provide the words you wish to **remove** (comma separated).\n"
-        "💡 *Example:* `Olamovies, Hdhub4u`\n\n"
-        "✨ *Send `/skip` if you prefer to keep the default settings.*"
+        "Send the words you want to remove (comma separated).\n"
+        "Example: `Olamovies, Hdhub4u`\n\n"
+        "Send `/skip` if you don't want to add anything."
     )
     
-    find_msg = await client.ask(query.message.chat.id, "⌨️ **Type words to remove/find (or send `/skip`):**", filters=filters.text, timeout=300)
+    find_msg = await client.ask(query.message.chat.id, "Type words to remove/find (or `/skip`):", filters=filters.text, timeout=300)
     if find_msg.text == '/cancel': return
     
     custom_replace = {}
@@ -1773,7 +1773,19 @@ async def filter_start_cb(client, query):
         return await query.answer("❌ Select at least one type!", show_alert=True)
         
     await query.answer("🚀 Proceeding...", show_alert=False)
-    try: await query.message.edit_text("⏳ **Initializing Task... Please Wait!**")
+    
+    try: 
+        # Sending Aesthetic UI for Batch mode initialization
+        if task_data.get("mode") != "WATCHER":
+            init_info = {
+                "source_title": "Analyzing...", 
+                "dest_title_name": task_data.get("dest_title", "Direct Message"),
+                "total": 0, "success": 0, "duplicate": 0, "deleted": 0, "skipped": 0, "filtered": 0
+            }
+            initial_ui = generate_aesthetic_progress_ui(init_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
+            await query.message.edit_text(initial_ui)
+        else:
+            await query.message.edit_text("⏳ **Initializing Task... Please Wait!**")
     except Exception: pass
     
     delay = task_data.get("delay", 3)
@@ -2067,15 +2079,6 @@ async def start_task_final(client: Client, message_context: Message, task_data: 
     dest = task_data.get("dest_title", "Direct Message")
     
     batch_temp.ACTIVE_TASKS[user_id] += 1
-
-    start_msg = f"✅ **Task Started!**\nDestination: `{dest}`\nSpeed: `{delay}s` delay\nTask ID: `{task_uuid[:8]}`"
-    try:
-        if isinstance(message_context, Message):
-            if message_context.from_user.is_bot:
-                await message_context.edit(start_msg)
-            else:
-                await message_context.reply(start_msg)
-    except: pass
     
     await send_log(f"▶️ **Task Started**\nUser: `{user_id}`\nLink: `{task_data['link'][:40]}...`")
 
@@ -2277,12 +2280,23 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
 
             try:
                 initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
-                status_message = await client.send_message(
-                    message.chat.id,
-                    initial_ui,
-                    reply_markup=cancel_btn,
-                    reply_to_message_id=message.id
-                )
+                
+                # Check if this is a reply to the bot's own status setup message
+                if getattr(message, "from_user", None) and getattr(message, "id", None):
+                    status_message = await client.send_message(
+                        message.chat.id,
+                        initial_ui,
+                        reply_markup=cancel_btn,
+                        reply_to_message_id=message.id
+                    )
+                else:
+                    # In case of inline edit fallback
+                    status_message = await client.send_message(
+                        message.chat.id,
+                        initial_ui,
+                        reply_markup=cancel_btn
+                    )
+                
                 task_info["status_msg_id"] = status_message.id
                 task_info["status_chat_id"] = status_message.chat.id
             except Exception as e:
@@ -2518,65 +2532,46 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
         elif msg_type == "Photo": original_caption = f"{msgid}.jpg"
         elif msg_type == "Voice": original_caption = f"{msgid}.ogg"
 
-    # 🚀 SAFE SMART CAPTION CLONER (Direct HTML edit, completely safe for formatting)
+    # 🚀 SAFE SMART CAPTION CLONER 
     def smart_caption(text_html, replace_dict=None):
         if not text_html: return ""
         if replace_dict is None: replace_dict = {}
         
-        # 1. Replace all underscores with spaces
         text_html = text_html.replace('_', ' ')
         
-        # ✂️ REMOVE HIDDEN LINKS AND TELEGRAM LINKS
         text_html = re.sub(r'<a\s+[^>]*>(.*?)</a>', r'\1', text_html, flags=re.IGNORECASE)
         text_html = re.sub(r'https?://(?:t\.me|telegram\.me|telegram\.dog)[^\s]*', '', text_html, flags=re.IGNORECASE)
         text_html = re.sub(r't\.me/[^\s]*', '', text_html, flags=re.IGNORECASE)
         
-        # 2. Hardcoded Popular Promo Removal
         for word in POPULAR_AD_WORDS:
-            text_html = re.sub(re.escape(word), "", text_html, flags=re.IGNORECASE)
+            text_html = re.sub(r'\[?\s*' + re.escape(word) + r'\s*\]?', "", text_html, flags=re.IGNORECASE)
             
-        # 3. Dynamic Custom Word Removal
         for find_w, rep_w in replace_dict.items():
-            text_html = re.sub(re.escape(find_w), rep_w, text_html, flags=re.IGNORECASE)
+            text_html = re.sub(r'\[?\s*' + re.escape(find_w) + r'\s*\]?', rep_w, text_html, flags=re.IGNORECASE)
             
-        # Clean empty brackets and generic texts
         text_html = re.sub(r'\[\s*\]|\(\s*\)', '', text_html)
 
-        # 4. Safely extract trailing extensions (.mkv, .mkv.001) preserving HTML tags
-        ext = ""
-        m_ext = re.search(r'(\.[a-zA-Z0-9]{2,5}(?:\.\d{3,4})?)(\s*(?:</[^>]+>)*\s*)$', text_html)
-        if m_ext:
-            ext = m_ext.group(1)
-            closing_tags = m_ext.group(2)
-            text_html = text_html[:m_ext.start(1)] + closing_tags
+        has_quality = bool(re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE))
+        
+        def ext_replacer(match):
+            codec = match.group(1).lower()
+            split_part = match.group(2) or ""
+            split_part = split_part.replace(" ", "")
+            res = ""
+            if not has_quality:
+                res += " 720p"
+            res += f".{codec}{split_part}"
+            return res
             
-        # 5. Strip starting brackets/tags and starting @usernames recursively
+        text_html = re.sub(r'\.?(mkv|mp4|avi|avc|hevc|webm|m4v|ts)(\s*\.\d{1,4}|\s*\.part\d{1,4})?(?=\s|$|\n|<|\[|\()', ext_replacer, text_html, count=1, flags=re.IGNORECASE)
+
         while True:
             old_text = text_html
             text_html = re.sub(r'^((?:<[^>]+>)*\s*)@[a-zA-Z0-9_]+(\s*)', r'\1', text_html)
             text_html = re.sub(r'^((?:<[^>]+>)*\s*)(?:\[.*?\]|\(.*?\))(\s*)', r'\1', text_html)
-            if old_text == text_html:
-                break
-                
-        # 6. Remove trailing @username at the very end of the text
-        text_html = re.sub(r'(@[a-zA-Z0-9_]+)(\s*(?:</[^>]+>)*\s*)$', r'\2', text_html)
-        
-        # 7. Add 720p safely if no quality tag exists
-        if not re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE):
-            m_tags = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
-            if m_tags:
-                text_html = text_html[:m_tags.start()] + " 720p" + m_tags.group(1)
-            else:
-                text_html += " 720p"
-
-        # 8. Re-attach extension
-        m_tags2 = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
-        if m_tags2:
-            text_html = text_html[:m_tags2.start()] + ext + m_tags2.group(1)
-        else:
-            text_html += ext
+            if old_text == text_html: break
             
-        # Clean double spaces
+        text_html = re.sub(r'(@[a-zA-Z0-9_]+)(\s*(?:</[^>]+>)*\s*)$', r'\2', text_html)
         text_html = re.sub(r' {2,}', ' ', text_html)
         
         if len(text_html) > 1024:
@@ -2671,7 +2666,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     task_folder_path = Path(f"./downloads/{user_id}/{task_uuid}/{msgid}/")
     task_folder_path.mkdir(parents=True, exist_ok=True)
 
-    # 🚀 RETAIN ORIGINAL FILE NAME ON DISK
     original_filename = "unknown_file"
     if getattr(msg, "document", None) and getattr(msg.document, "file_name", None): original_filename = msg.document.file_name
     elif getattr(msg, "video", None) and getattr(msg.video, "file_name", None): original_filename = msg.video.file_name
@@ -2703,6 +2697,16 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     if down_task and not down_task.done(): down_task.cancel()
                     parts = await split_file_python(file_path, chunk_size=1900*1024*1024)
                     
+                    try:
+                        thumb = None
+                        if getattr(msg_fresh, "document", None) and msg_fresh.document.thumbs: thumb = msg_fresh.document.thumbs[0]
+                        elif getattr(msg_fresh, "video", None) and msg_fresh.video.thumbs: thumb = msg_fresh.video.thumbs[0]
+                        elif getattr(msg_fresh, "audio", None) and msg_fresh.audio.thumbs: thumb = msg_fresh.audio.thumbs[0]
+                        if thumb: ph_path = await acc.download_media(thumb.file_id, file_name=str(task_folder_path / "thumb.jpg"))
+                    except: pass
+                    
+                    if ph_path and not os.path.exists(ph_path): ph_path = None
+
                     up_task = asyncio.create_task(upstatus(client, status_message, chat_for_status, index, total_count, header_text, task_uuid, user_id))
                     
                     async with USER_SEMAPHORES[user_id]:
@@ -2715,12 +2719,24 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                                     retry_part = 0
                                     while retry_part < 5: 
                                         try:
-                                            await client.send_document(dest_chat_id, str(part), caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid, "up"])
+                                            # 🚀 EXACT UPLOAD CLONE FOR SPLIT FILES (Thumbnail Included)
+                                            await client.send_document(
+                                                dest_chat_id, 
+                                                str(part), 
+                                                thumb=str(ph_path) if ph_path else None, 
+                                                caption=clean_caption, 
+                                                parse_mode=enums.ParseMode.HTML,
+                                                reply_to_message_id=dest_thread_id,
+                                                progress=progress, 
+                                                progress_args=[task_uuid, "up"]
+                                            )
                                             break
                                         except FloodWait as e: 
                                             await asyncio.sleep(e.value + 5)
                                         except Exception as e: 
                                             if "CANCELLED" in str(e): raise e
+                                            if "CAPTION_TOO_LONG" in str(e):
+                                                clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
                                             retry_part += 1
                                             await asyncio.sleep(3)
                                 try: os.remove(part)
@@ -2741,11 +2757,13 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                 
                 try:
                     thumb = None
-                    if msg_fresh.document and msg_fresh.document.thumbs: thumb = msg_fresh.document.thumbs[0]
-                    elif msg_fresh.video and msg_fresh.video.thumbs: thumb = msg_fresh.video.thumbs[0]
-                    elif msg_fresh.audio and msg_fresh.audio.thumbs: thumb = msg_fresh.audio.thumbs[0]
+                    if getattr(msg_fresh, "document", None) and msg_fresh.document.thumbs: thumb = msg_fresh.document.thumbs[0]
+                    elif getattr(msg_fresh, "video", None) and msg_fresh.video.thumbs: thumb = msg_fresh.video.thumbs[0]
+                    elif getattr(msg_fresh, "audio", None) and msg_fresh.audio.thumbs: thumb = msg_fresh.audio.thumbs[0]
                     if thumb: ph_path = await acc.download_media(thumb.file_id, file_name=str(task_folder_path / "thumb.jpg"))
                 except: pass
+                
+                if ph_path and not os.path.exists(ph_path): ph_path = None
 
                 download_success = True
                 break
@@ -2774,9 +2792,10 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     while retry_count < 5: 
                         if task_uuid and CANCEL_FLAGS.get(task_uuid): break
                         try:
-                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
-                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=ph_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            # 🚀 EXACT UPLOAD CLONE WITH CLEAN CAPTION AND THUMBNAILS
+                            if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=str(ph_path) if ph_path else None, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=str(ph_path) if ph_path else None, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
+                            elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=str(ph_path) if ph_path else None, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
                             elif "Photo" == msg_type: await uploader.send_photo(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
                             elif "Voice" == msg_type: await uploader.send_voice(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
                             elif "Animation" == msg_type: await uploader.send_animation(dest_chat_id, file_path, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id)
@@ -2787,6 +2806,8 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                             await asyncio.sleep(e.value + 5)
                         except Exception as e:
                             if "CANCELLED" in str(e): break
+                            if "CAPTION_TOO_LONG" in str(e):
+                                clean_caption = re.sub(r'<[^>]+>', '', clean_caption)[:1000]
                             retry_count += 1
                             await asyncio.sleep(3)
             return success_local
@@ -2886,31 +2907,34 @@ async def process_watcher_message(client, message):
                 text_html = re.sub(r't\.me/[^\s]*', '', text_html, flags=re.IGNORECASE)
                 
                 for word in POPULAR_AD_WORDS:
-                    text_html = re.sub(re.escape(word), "", text_html, flags=re.IGNORECASE)
+                    text_html = re.sub(r'\[?\s*' + re.escape(word) + r'\s*\]?', "", text_html, flags=re.IGNORECASE)
                 for find_w, rep_w in rep_dict.items():
-                    text_html = re.sub(re.escape(find_w), rep_w, text_html, flags=re.IGNORECASE)
+                    text_html = re.sub(r'\[?\s*' + re.escape(find_w) + r'\s*\]?', rep_w, text_html, flags=re.IGNORECASE)
                     
                 text_html = re.sub(r'\[\s*\]|\(\s*\)', '', text_html)
 
-                ext = ""
-                m_ext = re.search(r'(\.[a-zA-Z0-9]{2,5}(?:\.\d{3,4})?)(\s*(?:</[^>]+>)*\s*)$', text_html)
-                if m_ext:
-                    ext = m_ext.group(1)
-                    closing_tags = m_ext.group(2)
-                    text_html = text_html[:m_ext.start(1)] + closing_tags
+                ext_pattern = re.compile(r'\.?(mkv|mp4|avi|avc|hevc|webm|m4v|ts)(\s*\.\d{1,4}|\s*\.part\d{1,4})?(?=\s|$|\n|<|\[|\()', re.IGNORECASE)
+                
+                has_quality = bool(re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE))
+                
+                def ext_replacer(match):
+                    codec = match.group(1).lower()
+                    split_part = match.group(2) or ""
+                    split_part = split_part.replace(" ", "")
+                    res = ""
+                    if not has_quality:
+                        res += " 720p"
+                    res += f".{codec}{split_part}"
+                    return res
+                    
+                text_html = ext_pattern.sub(ext_replacer, text_html, count=1)
+
                 while True:
                     old_text = text_html
                     text_html = re.sub(r'^((?:<[^>]+>)*\s*)@[a-zA-Z0-9_]+(\s*)', r'\1', text_html)
                     text_html = re.sub(r'^((?:<[^>]+>)*\s*)(?:\[.*?\]|\(.*?\))(\s*)', r'\1', text_html)
                     if old_text == text_html: break
                 text_html = re.sub(r'(@[a-zA-Z0-9_]+)(\s*(?:</[^>]+>)*\s*)$', r'\2', text_html)
-                if not re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE):
-                    m_tags = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
-                    if m_tags: text_html = text_html[:m_tags.start()] + " 720p" + m_tags.group(1)
-                    else: text_html += " 720p"
-                m_tags2 = re.search(r'(\s*(?:</[^>]+>)*\s*)$', text_html)
-                if m_tags2: text_html = text_html[:m_tags2.start()] + ext + m_tags2.group(1)
-                else: text_html += ext
                 text_html = re.sub(r' {2,}', ' ', text_html)
                 if len(text_html) > 1024: text_html = text_html[:1024]
                 return text_html.strip()

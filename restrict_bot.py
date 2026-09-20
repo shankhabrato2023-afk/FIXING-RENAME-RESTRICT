@@ -337,6 +337,27 @@ async def custom_ask(self, chat_id: int, text: str, filters=None, timeout: int =
 
 Client.ask = custom_ask
 
+# Inline Skip button handler for ask
+class MockSkipMessage:
+    def __init__(self, text, chat, client):
+        self.text = text
+        self.chat = chat
+        self._client = client
+    async def reply(self, reply_text, *args, **kw):
+        return await self._client.send_message(self.chat.id, reply_text, *args, **kw)
+
+@app.on_callback_query(filters.regex("^ask_skip$"))
+async def ask_skip_cb(client, query):
+    chat_id = query.message.chat.id
+    if chat_id in ASK_FUTURES:
+        future, _ = ASK_FUTURES.pop(chat_id)
+        mock_msg = MockSkipMessage("/skip", query.message.chat, client)
+        if not future.done():
+            future.set_result(mock_msg)
+    try: await query.message.delete()
+    except: pass
+    await query.answer("Skipped!")
+
 @app.on_message(filters.private, group=-1)
 async def ask_listener(client, message):
     chat_id = message.chat.id
@@ -1661,11 +1682,12 @@ async def format_start_cb(client, query):
     await query.message.edit_text(
         "📝 **Custom Replace / Remove Wizard**\n\n"
         "Send the words you want to remove (comma separated).\n"
-        "Example: `Olamovies, Hdhub4u`\n\n"
-        "Send `/skip` if you don't want to add anything."
+        "💡 *Example:* `Olamovies, Hdhub4u`\n\n"
+        "✨ *Click the Skip button or send `/skip` if you prefer to keep the default settings.*",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏭ Skip", callback_data="ask_skip")]])
     )
     
-    find_msg = await client.ask(query.message.chat.id, "Type words to remove/find (or `/skip`):", filters=filters.text, timeout=300)
+    find_msg = await client.ask(query.message.chat.id, "⌨️ **Type words to remove/find (or send `/skip`):**", filters=filters.text, timeout=300)
     if find_msg.text == '/cancel': return
     
     custom_replace = {}
@@ -1775,7 +1797,6 @@ async def filter_start_cb(client, query):
     await query.answer("🚀 Proceeding...", show_alert=False)
     
     try: 
-        # Sending Aesthetic UI for Batch mode initialization
         if task_data.get("mode") != "WATCHER":
             init_info = {
                 "source_title": "Analyzing...", 
@@ -2281,7 +2302,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
             try:
                 initial_ui = generate_aesthetic_progress_ui(task_info, current_status="Starting Batch...", percent=0.0, footer_status="FORWARDING")
                 
-                # Check if this is a reply to the bot's own status setup message
                 if getattr(message, "from_user", None) and getattr(message, "id", None):
                     status_message = await client.send_message(
                         message.chat.id,
@@ -2290,7 +2310,6 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                         reply_to_message_id=message.id
                     )
                 else:
-                    # In case of inline edit fallback
                     status_message = await client.send_message(
                         message.chat.id,
                         initial_ui,
@@ -2417,7 +2436,8 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                                     reply_markup=cancel_btn
                                 )
                             last_update_time = current_now
-                        except: pass
+                        except Exception: 
+                            pass
                     
         except Exception as e:
             await send_log(f"❌ **Task Crashed**\nUser: `{user_id}`\nError: `{e}`")
@@ -2428,7 +2448,7 @@ async def process_links_logic(client: Client, message: Message, text: str, targe
                 status_word = "Cancelled"
                 header = f"Batch was Cancelled! 🛑 {user_mention} ✨"
             else:
-                footer_tag = "ᴄᴏᴍᴘʟᴇᴛᴇᴅ"
+                footer_tag = "ᴄᴏᴍPLᴇᴛᴇᴅ"
                 status_word = "Completed"
                 header = f"Batch was Completed! ✅ {user_mention} ✨"
 
@@ -2554,8 +2574,8 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
         has_quality = bool(re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE))
         
         def ext_replacer(match):
-            codec = match.group(1).lower()
-            split_part = match.group(2) or ""
+            codec = match.group(2).lower()
+            split_part = match.group(3) or ""
             split_part = split_part.replace(" ", "")
             res = ""
             if not has_quality:
@@ -2563,7 +2583,15 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
             res += f".{codec}{split_part}"
             return res
             
-        text_html = re.sub(r'\.?(mkv|mp4|avi|avc|hevc|webm|m4v|ts)(\s*\.\d{1,4}|\s*\.part\d{1,4})?(?=\s|$|\n|<|\[|\()', ext_replacer, text_html, count=1, flags=re.IGNORECASE)
+        ext_pattern = re.compile(r'(\.)?(mkv|mp4|avi|avc|hevc|webm|m4v|ts)(\s*\.\d{1,4}|\s*\.part\d{1,4})?(?=\s|$|\n|<|\[|\()', re.IGNORECASE)
+        text_html = ext_pattern.sub(ext_replacer, text_html, count=1)
+
+        if not has_quality and not ext_pattern.search(text_html):
+            if '\n' in text_html:
+                parts = text_html.rsplit('\n', 1)
+                text_html = parts[0].rstrip() + " 720p\n" + parts[1]
+            else:
+                text_html = text_html.rstrip() + " 720p"
 
         while True:
             old_text = text_html
@@ -2719,7 +2747,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                                     retry_part = 0
                                     while retry_part < 5: 
                                         try:
-                                            # 🚀 EXACT UPLOAD CLONE FOR SPLIT FILES (Thumbnail Included)
                                             await client.send_document(
                                                 dest_chat_id, 
                                                 str(part), 
@@ -2792,7 +2819,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
                     while retry_count < 5: 
                         if task_uuid and CANCEL_FLAGS.get(task_uuid): break
                         try:
-                            # 🚀 EXACT UPLOAD CLONE WITH CLEAN CAPTION AND THUMBNAILS
                             if "Document" == msg_type: await uploader.send_document(dest_chat_id, file_path, thumb=str(ph_path) if ph_path else None, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
                             elif "Video" == msg_type: await uploader.send_video(dest_chat_id, file_path, duration=getattr(msg.video, 'duration', 0), width=getattr(msg.video, 'width', 0), height=getattr(msg.video, 'height', 0), thumb=str(ph_path) if ph_path else None, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
                             elif "Audio" == msg_type: await uploader.send_audio(dest_chat_id, file_path, thumb=str(ph_path) if ph_path else None, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_to_message_id=dest_thread_id, progress=progress, progress_args=[task_uuid,"up"])
@@ -2914,12 +2940,11 @@ async def process_watcher_message(client, message):
                 text_html = re.sub(r'\[\s*\]|\(\s*\)', '', text_html)
 
                 ext_pattern = re.compile(r'\.?(mkv|mp4|avi|avc|hevc|webm|m4v|ts)(\s*\.\d{1,4}|\s*\.part\d{1,4})?(?=\s|$|\n|<|\[|\()', re.IGNORECASE)
-                
                 has_quality = bool(re.search(r'(2160p|1080p|720p|480p|360p|1440p|4k|8k)', text_html, re.IGNORECASE))
                 
                 def ext_replacer(match):
-                    codec = match.group(1).lower()
-                    split_part = match.group(2) or ""
+                    codec = match.group(2).lower()
+                    split_part = match.group(3) or ""
                     split_part = split_part.replace(" ", "")
                     res = ""
                     if not has_quality:
@@ -2928,6 +2953,13 @@ async def process_watcher_message(client, message):
                     return res
                     
                 text_html = ext_pattern.sub(ext_replacer, text_html, count=1)
+
+                if not has_quality and not ext_pattern.search(text_html):
+                    if '\n' in text_html:
+                        parts = text_html.rsplit('\n', 1)
+                        text_html = parts[0].rstrip() + " 720p\n" + parts[1]
+                    else:
+                        text_html = text_html.rstrip() + " 720p"
 
                 while True:
                     old_text = text_html
@@ -2939,7 +2971,6 @@ async def process_watcher_message(client, message):
                 if len(text_html) > 1024: text_html = text_html[:1024]
                 return text_html.strip()
 
-            # 🚀 EXACT TEXT WATCHER CLONE WITH CLEAN TEXT (No buttons)
             if msg_type == "Text":
                 original_caption = message.text.html if message.text else ""
                 clean_caption = smart_caption_inline(original_caption, custom_replace)
@@ -2981,7 +3012,6 @@ async def process_watcher_message(client, message):
                 dest_id = t['dest_id']
                 dest_thread = t.get('dest_thread')
                 
-                # 🚀 EXACT MEDIA WATCHER FAST FORWARD CLONE (No Buttons)
                 try: 
                     await app.copy_message(chat_id=dest_id, from_chat_id=safe_source_id, message_id=message.id, reply_to_message_id=dest_thread, caption=clean_caption, parse_mode=enums.ParseMode.HTML, reply_markup=None)
                     success = True
